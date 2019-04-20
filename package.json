@@ -1,0 +1,25 @@
+{
+  "name": "blasteroid.io",
+  "version": "1.0.0",
+  "description": "//this is the readme file.",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.16.4",
+    "socket.io": "^2.2.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcnultycollin/blasteroid.io.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mcnultycollin/blasteroid.io/issues"
+  },
+  "homepage": "https://github.com/mcnultycollin/blasteroid.io#readme"
+}
