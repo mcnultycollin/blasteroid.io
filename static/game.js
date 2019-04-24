@@ -90,12 +90,12 @@ socket.on('state', function(world) {
   }
 //  for (var id in world.bullets)
 // draw the lasers
-for (var id in world.players.lasers) {
-          ctx.fillStyle = "salmon";
-          ctx.beginPath();
-          ctx.arc(player.lasers[i].x, player.lasers[i].y, SHIP_SIZE / 15, 0, Math.PI * 2, false);
-          ctx.fill();
-        }
+//for (var id in world.players.lasers) {
+  //        ctx.fillStyle = "salmon";
+    //      ctx.beginPath();
+      //    ctx.arc(player.lasers[i].x, player.lasers[i].y, SHIP_SIZE / 15, 0, Math.PI * 2, false);
+        //  ctx.fill();
+        //}
         //else {
 // draw the eplosion
 //          ctx.fillStyle = "orangered";
