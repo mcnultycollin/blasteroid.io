@@ -1,17 +1,121 @@
-<html>
+<!doctype html>
+<html lang="en">
   <head>
-    <title>A Multiplayer Game</title>
-    <style>
-      canvas {
-        width: 800px;
-        height: 600px;
-        border: 5px solid black;
-      }
-    </style>
-    <script src="/socket.io/socket.io.js"></script>
+    <meta name="viewport" content="width=device-width">
+    <meta charset="utf-8">
+       <link href="static/site.css" rel="stylesheet"/>
+       <link href="https://fonts.googleapis.com/css?family=Anton|Roboto+Mono" rel="stylesheet">
+    <title>Blasteroid.io</title>
   </head>
+
   <body>
-    <canvas id="canvas"></canvas>
+<h1>Blasteroid.io</h1>
+<div class="col">
+<h2>A 2nd Generation IO Game</h2><br>
+<a class="button" href="#betajump">Play Beta</a>
+<p>Blasteroid.io is an upcoming Multiplayer Online Space Shooter. <br>
+Avoid asteroids, shoot opponents, watch out for aliens!<br><br>
+</p></div>
+<div class="col"><p>
+  Blasteroid follows the four golden pillars of modern .io games. These 4 pillars are:<br>
+<br>
+  <strong>1. Free to play </strong>- No signup required. Simply navigate to the URL and click play to begin!<br>
+<br>  <strong>2. PvP </strong>- Beating robots just isn’t as satisfying, is it?<br>
+<br>  <strong>3. Never ending gameplay</strong> - Play until you die, achieve as high a score as possible!<br>
+<br>  <strong>4. Survival perks</strong> - The longer you play, the more of an advantage you have against other players. One should not invest 15 minutes into a game for no reason, after all!<br>
+<br>
+</p>
+</div>
+<div class="col">
+  <h2>What’s Special About Blasteroid.io?</h2>
+<p>
+  Most IO games today are a spin-off of Agar.io, the original mechanics that experienced profound success.
+  Blasteroid.io is a little different. This game is not based primarily off of collision with other players.
+  Instead, players shoot each other to eliminate opponents. Additionally, Blasteroid.io has
+  alternative components that will eliminate players as well. To succeed, proactive gameplay
+   is required.<br><br>
+</p></div>
+<div class="col">
+  <h2>Stay in the Loop:</h2>
+<p>Sign up to receive an update when the game is ready for deployment!</p><br>
+
+
+
+
+
+<section class="container">
+ <section class="one">
+  <div class="logo">
+    <img src="https://image.flaticon.com/icons/svg/143/143361.svg">
+  </div>
+  <h2 class="heading">
+    Please Subscribe to Get Updates
+  </h2>
+  <p>Signup with your email to get latest updates.
+</p>
+<form action="https://formspree.io/email@domain.tld" method="POST">
+ <input type="email" name="_replyto" placeholder="Enter your email.">
+ <input type="submit" class="btn" value="Send">
+</form>
+  </section>
+  <section class="two">
+    <h3>
+      Thank you for subscribing!
+    </h3>
+    <div class="close">
+    </div>
+  </section>
+</section>
+
+</div>
+
+<br>
+<div class="col">
+
+<section class="container">
+ <section class="one">
+   <div class="logo2">
+     <img src="static/img/rockets.svg">
+   </div>
+  <h2 class="heading">
+    Please Consider a Donation.
+  </h2>
+  <p>Donate to help fund Blasteroid.io development.
+</p>
+<form class="donater" action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_top">
+<input type="hidden" name="cmd" value="_s-xclick" />
+<input type="hidden" name="hosted_button_id" value="Y3XVX5QZL39FL" />
+<input type="image" src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif" border="0" name="submit" title="PayPal - The safer, easier way to pay online!" alt="Donate with PayPal button" />
+<img alt="" border="0" src="https://www.paypal.com/en_US/i/scr/pixel.gif" width="1" height="1" />
+</form>
+</section>
+<section class="two">
+  <h3>
+    Thank you for subscribing!
+  </h3>
+  <div class="close">
+  </div>
+</section>
+</section>
+
+
+</div></body>
+<footer>
+  <a name="betajump">
+  <h1>Blasteroid Beta</h1>
+  <style>
+    canvas {
+      width: 800px;
+      height: 600px;
+      border: 5px solid black;
+      background-color: #d4befe;
+      text-align:center;
+
+    }
+  </style>
+  <script src="/socket.io/socket.io.js"></script>
+</footer>
+  <body>
+  <canvas id="canvas"></canvas>
   </body>
   <script src="/static/game.js"></script>
-</html>
