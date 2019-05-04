@@ -21,6 +21,9 @@ app.use('/static', express.static(__dirname + '/static'));
 app.get('/', function(request, response) {
   response.sendFile(path.join(__dirname, 'index.html'));
 });
+app.get('/beta', function(request, response) {
+  response.sendFile(path.join(__dirname, 'Blasteroid.html'));
+});
 // Starts the server.
 server.listen(5000, function() {
   console.log('Starting server on port 5000');
@@ -29,10 +32,6 @@ server.listen(5000, function() {
 // Add the WebSocket handlers
 io.on('connection', function(socket) {
 });
-setInterval(function() {
-  io.sockets.emit('message', 'hi!');
-}, 1000);
-
 
 var world = {
 players: {},
