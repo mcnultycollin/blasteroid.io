@@ -88,6 +88,10 @@ socket.on('state', function(world) {
     context.fillStyle = player.color;
     context.fill();
 
+    context.font = "10px Arial";
+    context.textAlign = "center";
+    context.fillText(player.name, player.x, player.y + 50);
+
     // draw lasers
     const lasers = world.players[id].lasers;
     for (let i in lasers) {
