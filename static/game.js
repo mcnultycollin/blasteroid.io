@@ -85,7 +85,7 @@ socket.on('state', function(world) {
     context.closePath();
     context.stroke();
     //fill ship
-    context.fillStyle = "blue";
+    context.fillStyle = player.color;
     context.fill();
 
     // draw lasers
