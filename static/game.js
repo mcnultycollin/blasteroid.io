@@ -87,6 +87,15 @@ socket.on('state', function(world) {
     //fill ship
     context.fillStyle = "blue";
     context.fill();
+
+    // draw lasers
+    const lasers = world.players[id].lasers;
+    for (let i in lasers) {
+      context.fillStyle = "salmon";
+      context.beginPath();
+      context.arc(player.lasers[i].x, player.lasers[i].y, SHIP_SIZE / 15, 0, Math.PI * 2, false);
+      context.fill();
+    }
   }
 //  for (var id in world.bullets)
 // draw the lasers
