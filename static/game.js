@@ -57,6 +57,25 @@ setInterval(function() {
 }, 1000 / 60);
 
 
+// currently this just displays all players in the game
+// in the future, we could make this show a scoreboard or something if we want
+function drawScore(world, context) {
+  context.textAlign = "left";
+
+  context.font = "25px Impact";
+  context.fillStyle = "gray";
+  context.fillText('Active Players:', 10, 40);
+  
+  context.font = "15px Arial";
+  let i = 0;
+  for (var id in world.players) {
+    const player = world.players[id];
+    context.fillStyle = player.color;
+    context.fillText(player.name, 10, i*20 + 60);
+    i++;
+  }
+}
+
 
 var canvas = document.getElementById('canvas');
 canvas.width = 800;
@@ -91,6 +110,8 @@ socket.on('state', function(world) {
     context.font = "10px Arial";
     context.textAlign = "center";
     context.fillText(player.name, player.x, player.y + 50);
+
+    drawScore(world, context);
 
     // draw lasers
     const lasers = world.players[id].lasers;
