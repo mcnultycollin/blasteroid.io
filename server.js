@@ -1,7 +1,7 @@
 const TURN_SPEED = 180; //turn speed in degrees per second
 const FPS = 30; //frame per second
-const SHIP_THRUST = 10; //acceleration of ship in pixels per second per second
-const FRICTION = 0.02;
+const SHIP_THRUST = 2; //acceleration of ship in pixels per second per second
+const FRICTION = 0.005;
 const LASER_SPD = 500; // speed of lasers in pixels per second
 const LASER_DIST = 0.6; // max distance laser can travel as fraction of screen width
 const LASER_EXPLODE_DUR = 0.1; // duration of the lasers' explosion in seconds
@@ -20,7 +20,7 @@ var socketIO = require('socket.io');
 var app = express();
 var server = http.Server(app);
 var io = socketIO(server);
-app.set('port', 80);
+app.set('port', 5000);
 app.use('/static', express.static(__dirname + '/static'));
 // Routing
 app.get('/', function(request, response) {
@@ -30,8 +30,8 @@ app.get('/beta', function(request, response) {
   response.sendFile(path.join(__dirname, 'Blasteroid.html'));
 });
 // Starts the server.
-server.listen(80, function() {
-  console.log('Starting server on port 80');
+server.listen(5000, function() {
+  console.log('Starting server on port 5000');
 });
 
 // Add the WebSocket handlers
@@ -77,6 +77,7 @@ io.on('connection', function(socket) {
       dy: 0,
       canShoot: true,
       lasers: [],
+      score: 0,
       color: stringToColor(socket.id),
       // note that it's possible but improbable for 2 players to have the same name
       name: generateRandomPlayerName(),
@@ -140,7 +141,7 @@ socket.on('disconnect', function() {
         player.lasers.splice(i, 1);
       }
     }
-
+//screen wrap
     if (player.x < 0 - player.r) {
         player.x = 800 + player.r;
     } else if (player.x > 800 + player.r) {
