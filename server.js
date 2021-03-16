@@ -26,7 +26,7 @@ app.use('/static', express.static(__dirname + '/static'));
 app.get('/', function(request, response) {
   response.sendFile(path.join(__dirname, 'index.html'));
 });
-app.get('/beta', function(request, response) {
+app.get('/demo', function(request, response) {
   response.sendFile(path.join(__dirname, 'Blasteroid.html'));
 });
 // Starts the server.
