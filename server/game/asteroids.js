@@ -1,27 +1,47 @@
-/** Asteroid field: straight-line drift and population upkeep. */
-import { TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
-import { wrap } from '../../shared/math.js';
+/**
+ * Asteroid field and motion. Three kinds of motion, each replicated as
+ * cheaply as possible:
+ *   - free rocks in open space drift in straight lines (sent once);
+ *   - belt rocks follow exact circular orbits around a planet (sent once);
+ *   - free rocks inside a gravity well fall under gravity with orbital decay
+ *     until they crash or escape (streamed while inside the well).
+ */
+import { RemoveReason } from '../../shared/constants.js';
+import { insidePlanet, orbitState, stepBallistic } from '../../shared/gravity.js';
 import { findOpenSpot, randomVelocity, spawnAsteroid } from './spawning.js';
 import { ASTEROID } from './tuning.js';
 
 const velocity = { vx: 0, vy: 0 };
 
 export function updateAsteroids(game) {
+  const planets = game.planets;
   for (const a of game.asteroids) {
     if (a.dead) continue;
-    a.x = wrap(a.x + a.vx * TICK_DT, WORLD_SIZE);
-    a.y = wrap(a.y + a.vy * TICK_DT, WORLD_SIZE);
+    if (a.orbit) {
+      orbitState(planets[a.orbit.planet], a.orbit, game.tick, a);
+      continue;
+    }
+    const inWell = stepBallistic(a, planets);
+    if (inWell !== a.streamed) {
+      a.streamed = inWell; // clients switch between streaming and straight-line extrapolation
+      a.version++;
+    }
+    if (inWell && insidePlanet(a.x, a.y, a.radius, planets)) {
+      a.dead = true; // shattered on the surface
+      a.removeReason = RemoveReason.DESTROYED;
+    }
   }
 }
 
+/** Mass of the open asteroid field (belt rocks are counted per planet). */
 export function asteroidMass(game) {
   let mass = 0;
-  for (const a of game.asteroids) if (!a.dead) mass += ASTEROID.massUnits[a.size];
+  for (const a of game.asteroids) if (!a.dead && !a.orbit) mass += ASTEROID.massUnits[a.size];
   return mass;
 }
 
 export function spawnRandomAsteroid(game, size) {
-  const spot = findOpenSpot(game, ASTEROID.minSpawnDistance, 12);
+  const spot = findOpenSpot(game, ASTEROID.minSpawnDistance, 12, true);
   const [minSpeed, maxSpeed] = ASTEROID.speed[size];
   randomVelocity(game.rng, minSpeed, maxSpeed, velocity);
   return spawnAsteroid(game, size, spot.x, spot.y, velocity.vx, velocity.vy);

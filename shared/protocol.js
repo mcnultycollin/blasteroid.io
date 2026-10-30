@@ -44,6 +44,10 @@ export const NO_ID = 0xffff;
 const BULLET_FRESH = 0x40;
 const BULLET_OWN = 0x80;
 const BULLET_KIND_MASK = 0x3f;
+const ASTEROID_SIZE_MASK = 0x03;
+const ASTEROID_ORBIT = 0x04; // on a circular orbit: sent once as orbit parameters
+const ASTEROID_BALLISTIC = 0x08; // loose inside a gravity well: streamed every snapshot
+const ASTEROID_RETROGRADE = 0x10; // orbit runs clockwise on screen
 
 /* Quantisation ------------------------------------------------------------ */
 
@@ -222,12 +226,19 @@ export function encodePing(w, time) {
 
 /* Server -> client: small messages ------------------------------------------ */
 
-export function encodeWelcome(w, tick, roomId) {
-  return w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).finish();
+/** Includes the room's planets; they never move, so clients learn them once. */
+export function encodeWelcome(w, tick, roomId, planets) {
+  w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(planets.length);
+  for (const p of planets) w.f64(p.x).f64(p.y).f64(p.radius).f64(p.density).str(p.name);
+  return w.finish();
 }
 
 export function readWelcome(r) {
-  return { version: r.u8(), tick: r.u32(), roomId: r.u16() };
+  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), planets: [] };
+  for (let n = r.u8(); n > 0; n--) {
+    welcome.planets.push({ x: r.f64(), y: r.f64(), radius: r.f64(), density: r.f64(), name: r.str() });
+  }
+  return welcome;
 }
 
 export function encodeJoined(w, playerId) {
@@ -418,9 +429,14 @@ export class SnapshotWriter {
           .u8(e.level)
           .u8(e.weapon);
         break;
-      case EntityType.ASTEROID:
-        w.u16(qPos(e.x)).u16(qPos(e.y)).i16(qVel(e.vx)).i16(qVel(e.vy)).u8(e.size);
+      case EntityType.ASTEROID: {
+        const o = e.orbit;
+        w.u8(e.size | (o ? ASTEROID_ORBIT : 0) | (e.streamed ? ASTEROID_BALLISTIC : 0) | (o && o.dir < 0 ? ASTEROID_RETROGRADE : 0));
+        // Orbit phases and radii are snapped to these encodings server-side, so they round-trip exactly.
+        if (o) w.u8(o.planet).u16(o.radius).u16(qAngle(o.phase)).u32(o.epoch);
+        else w.u16(qPos(e.x)).u16(qPos(e.y)).i16(qVel(e.vx)).i16(qVel(e.vy));
         break;
+      }
       case EntityType.BULLET: {
         const own = viewerShipId !== NO_ID && e.ownerId === viewerShipId;
         const fresh = tick - e.spawnTick <= SNAPSHOT_INTERVAL;
@@ -499,13 +515,26 @@ export function readEntity(type, r, o) {
       o.level = r.u8();
       o.weapon = r.u8();
       break;
-    case EntityType.ASTEROID:
-      o.x = dqPos(r.u16());
-      o.y = dqPos(r.u16());
-      o.vx = dqVel(r.i16());
-      o.vy = dqVel(r.i16());
-      o.size = r.u8();
+    case EntityType.ASTEROID: {
+      const bits = r.u8();
+      o.size = bits & ASTEROID_SIZE_MASK;
+      o.streamed = (bits & ASTEROID_BALLISTIC) !== 0;
+      if (bits & ASTEROID_ORBIT) {
+        const orbit = o.orbit ?? (o.orbit = { planet: 0, radius: 0, phase: 0, epoch: 0, dir: 1, omega: 0 });
+        orbit.planet = r.u8();
+        orbit.radius = r.u16();
+        orbit.phase = dqAngle(r.u16());
+        orbit.epoch = r.u32();
+        orbit.dir = bits & ASTEROID_RETROGRADE ? -1 : 1;
+      } else {
+        o.orbit = null;
+        o.x = dqPos(r.u16());
+        o.y = dqPos(r.u16());
+        o.vx = dqVel(r.i16());
+        o.vy = dqVel(r.i16());
+      }
       break;
+    }
     case EntityType.BULLET: {
       o.ownerId = r.u16();
       o.x = dqPos(r.u16());

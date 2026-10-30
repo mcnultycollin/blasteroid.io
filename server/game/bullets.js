@@ -1,6 +1,6 @@
 /** Projectile movement and impact resolution. */
 import { EntityType, EventKind, KillCause, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
-import { segmentCircleHit, wrap } from '../../shared/math.js';
+import { segmentCircleHit, wrap, wrapDelta } from '../../shared/math.js';
 import { damageAlien, damageAsteroid, damageShip } from './combat.js';
 import { alienCause } from './ships.js';
 import { SHIP } from './tuning.js';
@@ -48,6 +48,18 @@ export function collideBullets(game) {
         target = t;
       }
     }
+    // Planets block shots: fight around them, or hide behind them.
+    for (const p of game.planets) {
+      const reach = p.radius + b.radius + Math.abs(sx) + Math.abs(sy);
+      const dx = wrapDelta(p.x - b.x, WORLD_SIZE);
+      const dy = wrapDelta(p.y - b.y, WORLD_SIZE);
+      if (dx > reach || dx < -reach || dy > reach || dy < -reach) continue;
+      const hit = segmentCircleHit(px, py, sx, sy, p.x, p.y, p.radius + b.radius, WORLD_SIZE);
+      if (hit >= 0 && hit < first) {
+        first = hit;
+        target = p;
+      }
+    }
     if (target) resolveHit(game, b, target, wrap(px + sx * first, WORLD_SIZE), wrap(py + sy * first, WORLD_SIZE));
   }
 }
@@ -76,6 +88,8 @@ function resolveHit(game, b, target, x, y) {
     case EntityType.ALIEN:
       dealt = damageAlien(game, target, b.damage, owner);
       break;
+    default:
+      break; // a planet: absorbs the shot
   }
   if (owner.type === EntityType.SHIP && owner.player.wantsEvents) {
     owner.player.events.push({
@@ -85,7 +99,7 @@ function resolveHit(game, b, target, x, y) {
       damage: dealt,
       x,
       y,
-      killed: target.dead,
+      killed: target.dead === true,
     });
   }
 }

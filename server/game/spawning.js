@@ -21,9 +21,10 @@ export function nearestShipDistSq(game, x, y) {
 
 /**
  * Picks a random point, preferring spots at least `minShipDistance` from any
- * ship and clear of asteroids and aliens. Returns the best of a few samples.
+ * ship and clear of asteroids, aliens and planets (and of gravity wells
+ * entirely with `avoidWells`). Returns the best of a few samples.
  */
-export function findOpenSpot(game, minShipDistance, tries = 24) {
+export function findOpenSpot(game, minShipDistance, tries = 24, avoidWells = false) {
   let bestX = 0;
   let bestY = 0;
   let bestScore = -Infinity;
@@ -38,6 +39,12 @@ export function findOpenSpot(game, minShipDistance, tries = 24) {
       const dy = wrapDelta(o.y - y, WORLD_SIZE);
       const clear = o.radius + 110;
       if (dx * dx + dy * dy < clear * clear) score -= 10000;
+    }
+    for (const p of game.planets) {
+      const dx = wrapDelta(p.x - x, WORLD_SIZE);
+      const dy = wrapDelta(p.y - y, WORLD_SIZE);
+      const keepOut = avoidWells ? p.range + 60 : p.radius + 140;
+      if (dx * dx + dy * dy < keepOut * keepOut) score -= 10000;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -59,7 +66,7 @@ export function randomVelocity(rng, minSpeed, maxSpeed, out) {
 
 export function spawnShip(game, player) {
   const ship = new Ship(player);
-  const spot = findOpenSpot(game, 900);
+  const spot = findOpenSpot(game, 900, 24, true); // never spawn inside a gravity well
   ship.x = spot.x;
   ship.y = spot.y;
   ship.angle = game.rng() * TAU;

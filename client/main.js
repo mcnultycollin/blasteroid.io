@@ -129,6 +129,8 @@ class GameClient {
       },
       welcome: (w) => {
         if (w.version !== PROTOCOL_VERSION) this.ui.showToast(KICK_MESSAGES[KickReason.OUTDATED]);
+        this.world.setPlanets(w.planets);
+        this.predictor.planets = this.world.planets;
       },
       joined: (id) => {
         this.myPlayerId = id;
@@ -170,6 +172,7 @@ class GameClient {
       },
       removed: (e, reason, collectorId) => this.onRemoved(e, reason, collectorId),
       damaged: () => {},
+      predictedImpact: (x, y) => this.effects.spark(x, y, Color.ORANGE),
       event: (ev) => this.onEvent(ev),
     };
   }
@@ -247,6 +250,7 @@ class GameClient {
       [KillCause.SHIP]: killer ? `Shot down by ${killer}` : 'Shot down',
       [KillCause.RAM]: killer ? `Rammed by ${killer}` : 'Collision',
       [KillCause.ASTEROID]: killer ? `Pushed into an asteroid by ${killer}` : 'You hit an asteroid',
+      [KillCause.PLANET]: killer ? `Pushed into a planet by ${killer}` : 'You crashed into a planet',
       [KillCause.ALIEN]: 'Shot down by an alien saucer',
       [KillCause.MOTHERSHIP]: 'Obliterated by the Mothership',
     }[d.cause];
@@ -286,6 +290,9 @@ class GameClient {
         break;
       case KillCause.MOTHERSHIP:
         parts = [victim, text(' was obliterated by the Mothership')];
+        break;
+      case KillCause.PLANET:
+        parts = killer ? [killer, text(' smashed '), victim, text(' into a planet')] : [victim, text(' crashed into a planet')];
         break;
       default:
         parts = [victim, text(' was shot down by aliens')];
@@ -461,6 +468,12 @@ class GameClient {
     const result = p.step(buttons, dqAngle(aimQ)); // predict with exactly what the server will see
     this.net.sendInput(p.seq, buttons, aimQ);
     if (result & StepResult.FIRED) this.firePredicted();
+    if (result & StepResult.IMPACT && p.state.impact > 40) {
+      // Predicted, so touchdowns and crashes give feedback without waiting for the server.
+      const s = p.state;
+      this.effects.burst(s.x, s.y, Math.min(24, 4 + Math.round(s.impact / 25)), 60 + s.impact * 0.4, Color.ROCK, 0.5, 0.03);
+      this.sound.thud(s.impact / 400);
+    }
     if (result & StepResult.THRUST) {
       const s = p.state;
       const boost = (result & StepResult.BOOST) !== 0;
@@ -570,6 +583,9 @@ class GameClient {
       fps: this.fps,
       serverTick: world.clock.serverTick(now),
       touch: this.input.touchMode,
+      planets: world.planets,
+      shipX: selfView ? selfView.rx : 0,
+      shipY: selfView ? selfView.ry : 0,
       touchStick: this.input.touchMode && this.input.stick.id !== -1 ? this.input.stick : null,
       shipScreen: this.shipScreen,
       debug: this.debug,

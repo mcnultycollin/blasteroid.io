@@ -124,3 +124,23 @@ test('per-player events are delivered once', () => {
   assert.equal(snapshot(game, session).events.length, 1);
   assert.equal(snapshot(game, session).events.length, 0);
 });
+
+test('belt rocks are sent once; rocks falling in a gravity well are streamed', async () => {
+  const { createPlanet } = await import('../shared/gravity.js');
+  const { spawnOrbiter } = await import('../server/game/planets.js');
+  const { game, session } = setup();
+  const planet = createPlanet(0, 1000, 1250, 120, 1.2, 'P');
+  planet.spin = 1;
+  game.planets = [planet];
+  const orbiter = spawnOrbiter(game, planet, 1, false);
+  const faller = spawnAsteroid(game, 0, 1000, 1250 - 250, 0, 0);
+  game.step();
+  assert.ok(faller.streamed);
+  snapshot(game, session);
+  for (let i = 0; i < 3; i++) {
+    game.step();
+    const ids = snapshot(game, session).records.map((r) => r.id);
+    assert.ok(ids.includes(faller.id), 'falling rock streamed');
+    assert.ok(!ids.includes(orbiter.id), 'orbiting rock not resent');
+  }
+});

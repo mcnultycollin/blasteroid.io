@@ -25,7 +25,7 @@ import {
 } from './combat.js';
 import { Mask } from './entities.js';
 import { spawnBullet } from './spawning.js';
-import { ASTEROID, PICKUP, REWARD, SHIP } from './tuning.js';
+import { ASTEROID, PICKUP, PLANETS, REWARD, SHIP } from './tuning.js';
 
 const shots = [];
 const nearby = [];
@@ -57,7 +57,8 @@ export function processShipInputs(game) {
 }
 
 function applyCommand(game, ship, buttons, aim, seq) {
-  const result = stepShip(ship, buttons, aim, ship.st);
+  const result = stepShip(ship, buttons, aim, ship.st, game.planets);
+  if (result & StepResult.IMPACT) crashIntoPlanet(game, ship);
   ship.thrusting = (result & StepResult.THRUST) !== 0;
   ship.boosting = (result & StepResult.BOOST) !== 0;
   ship.braking = (result & StepResult.BRAKE) !== 0;
@@ -121,6 +122,23 @@ function expirePowerup(ship, p) {
   ship.statsVersion++;
 }
 
+/** Hard planet impacts hurt; gentle touchdowns are landings. */
+function crashIntoPlanet(game, ship) {
+  if (ship.impact <= PLANETS.crashSafeSpeed || ship.contactCooldown > 0) return;
+  ship.contactCooldown = SHIP.contactCooldown;
+  let planet = game.planets[0];
+  let best = Infinity;
+  for (const p of game.planets) {
+    const d = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE)) - p.radius;
+    if (d < best) {
+      best = d;
+      planet = p;
+    }
+  }
+  const damage = (ship.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage;
+  damageShip(game, ship, damage, null, KillCause.PLANET, planet.x, planet.y);
+}
+
 /** Removes a ship without a kill (idle timeout or player leaving). */
 export function despawnShip(game, ship) {
   ship.dead = true;
@@ -174,7 +192,7 @@ function bounce(a, b, dx, dy, distSq, massA, massB, restitution) {
   const nx = dx / dist;
   const ny = dy / dist;
   const overlap = a.radius + b.radius - dist;
-  const shareA = massB / (massA + massB);
+  const shareA = massB === Infinity ? 1 : massB / (massA + massB);
   a.x = wrap(a.x - nx * overlap * shareA, WORLD_SIZE);
   a.y = wrap(a.y - ny * overlap * shareA, WORLD_SIZE);
   b.x = wrap(b.x + nx * overlap * (1 - shareA), WORLD_SIZE);
@@ -192,13 +210,17 @@ function bounce(a, b, dx, dy, distSq, massA, massB, restitution) {
 const impactScale = (closing) => clamp(closing / 250, 0.4, 2);
 
 function hitAsteroid(game, ship, asteroid, dx, dy, distSq) {
-  const closing = bounce(ship, asteroid, dx, dy, distSq, SHIP.mass, ASTEROID.mass[asteroid.size], 0.6);
-  const speed = Math.hypot(asteroid.vx, asteroid.vy);
-  if (speed > ASTEROID.maxSpeed) {
-    asteroid.vx *= ASTEROID.maxSpeed / speed;
-    asteroid.vy *= ASTEROID.maxSpeed / speed;
+  // Belt rocks stay locked to their orbits: the ship bounces off them.
+  const railed = asteroid.orbit !== null;
+  const closing = bounce(ship, asteroid, dx, dy, distSq, SHIP.mass, railed ? Infinity : ASTEROID.mass[asteroid.size], 0.6);
+  if (!railed) {
+    const speed = Math.hypot(asteroid.vx, asteroid.vy);
+    if (speed > ASTEROID.maxSpeed) {
+      asteroid.vx *= ASTEROID.maxSpeed / speed;
+      asteroid.vy *= ASTEROID.maxSpeed / speed;
+    }
+    asteroid.version++; // its motion changed; clients need the new trajectory
   }
-  asteroid.version++; // its straight-line motion changed; clients need the new trajectory
   if (closing > 0 && ship.contactCooldown === 0) {
     ship.contactCooldown = SHIP.contactCooldown;
     const impact = impactScale(closing);

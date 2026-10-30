@@ -14,11 +14,14 @@ import {
 import { NO_ID } from '../shared/protocol.js';
 import { MAX_LEVEL, STAT_MAX, Stat, WEAPON_UNLOCK_LEVEL, Weapon, scoreForLevel } from '../shared/stats.js';
 import { asteroidMass } from '../server/game/asteroids.js';
-import { awardScore, collectPickup, damageAlien, damageShip, killShip } from '../server/game/combat.js';
+import { awardScore, collectPickup, damageAlien, damageAsteroid, damageShip, killShip } from '../server/game/combat.js';
 import { Game } from '../server/game/Game.js';
 import { randomName, sanitizeName } from '../server/game/names.js';
-import { spawnAsteroid, spawnPickup } from '../server/game/spawning.js';
-import { ASTEROID, MOTHERSHIP, PICKUP, REWARD, SHIP } from '../server/game/tuning.js';
+import { findOpenSpot, spawnAsteroid, spawnPickup } from '../server/game/spawning.js';
+import { createPlanet } from '../shared/gravity.js';
+import { generatePlanets, spawnOrbiter } from '../server/game/planets.js';
+import { createRng } from '../shared/math.js';
+import { ASTEROID, MOTHERSHIP, PICKUP, PLANETS, REWARD, SHIP } from '../server/game/tuning.js';
 import { addShip, emptyGame, hold } from './helpers.js';
 
 test('a new game seeds the asteroid field to its target mass', () => {
@@ -337,4 +340,115 @@ test('entity types are consistent', () => {
   const game = emptyGame();
   const { ship } = addShip(game);
   assert.equal(ship.type, EntityType.SHIP);
+});
+
+/* Planets ------------------------------------------------------------------ */
+
+function planetGame(radius = 140, density = 1.5) {
+  const game = emptyGame();
+  const planet = createPlanet(0, 3000, 3000, radius, density, 'Test');
+  planet.spin = 1;
+  game.planets = [planet];
+  return { game, planet };
+}
+
+test('generated planets have one of each type and well-separated gravity wells', () => {
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const planets = generatePlanets(createRng(seed));
+    assert.equal(planets.length, PLANETS.count);
+    const dense = planets.find((p) => p.density >= PLANETS.types[2].density[0]);
+    const giant = planets.find((p) => p.radius >= PLANETS.types[0].radius[0]);
+    assert.ok(dense && giant && dense.radius < giant.radius);
+    for (const a of planets) {
+      for (const b of planets) {
+        if (a === b) continue;
+        assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 0, 'distinct');
+      }
+    }
+  }
+});
+
+test('planets block shots: a ship hiding behind one takes no damage', () => {
+  const { game, planet } = planetGame();
+  const shooter = addShip(game, 'Shooter', planet.x - planet.radius - 120, planet.y, 0);
+  const hider = addShip(game, 'Hider', planet.x + planet.radius + 60, planet.y, Math.PI);
+  hider.ship.invuln = 0;
+  hold(game, shooter.player, Button.FIRE, 90);
+  assert.equal(hider.ship.hp, hider.ship.maxHp);
+  assert.ok(shooter.player.events.some((e) => e.kind === 2 && e.damage === 0), 'impacts are reported so clients show them');
+});
+
+test('crashing into a planet hurts, landing does not, and a crash can kill', () => {
+  const { game, planet } = planetGame();
+  const lander = addShip(game, 'Lander', planet.x + planet.radius + 40, planet.y);
+  hold(game, lander.player, 0, 180); // fall gently and settle
+  assert.equal(lander.ship.hp, lander.ship.maxHp);
+  const diver = addShip(game, 'Diver', planet.x - planet.radius - 200, planet.y, 0);
+  diver.ship.hp = 10;
+  diver.ship.vx = 900;
+  game.clearOutbox();
+  hold(game, diver.player, Button.THRUST, 30);
+  assert.equal(diver.player.ship, null, 'destroyed on impact');
+  assert.equal(game.outbox.kills[0].cause, KillCause.PLANET);
+});
+
+test('belt rocks follow their orbits exactly and are only sent once', () => {
+  const { game, planet } = planetGame();
+  const rock = spawnOrbiter(game, planet, 2, false);
+  assert.ok(rock.orbit);
+  const version = rock.version;
+  for (let i = 0; i < 300; i++) game.step();
+  assert.ok(Math.abs(Math.hypot(rock.x - planet.x, rock.y - planet.y) - rock.orbit.radius) < 1e-6);
+  assert.equal(rock.version, version, 'no re-sends: clients compute the orbit themselves');
+});
+
+test('ships bounce off belt rocks without knocking them out of orbit', () => {
+  const { game, planet } = planetGame();
+  const rock = spawnOrbiter(game, planet, 2, false);
+  const radius = rock.orbit.radius;
+  const { player, ship } = addShip(game, 'Rammer', rock.x + 120, rock.y);
+  game.rebuildGrid();
+  ship.vx = rock.vx - 500;
+  ship.vy = rock.vy;
+  hold(game, player, 0, 20);
+  assert.ok(ship.hp < ship.maxHp, 'the collision happened');
+  assert.ok(Math.abs(Math.hypot(rock.x - planet.x, rock.y - planet.y) - radius) < 1e-6, 'still on its orbit');
+});
+
+test('shooting a belt rock splits it into rocks on neighbouring orbits', () => {
+  const { game, planet } = planetGame();
+  const rock = spawnOrbiter(game, planet, 2, false);
+  rock.hp = 1;
+  const { player } = addShip(game, 'Gunner', 0, 0);
+  damageAsteroid(game, rock, 100, player.ship); // same path a projectile takes
+  const fragments = game.asteroids.filter((a) => !a.dead && a !== rock);
+  assert.equal(fragments.length, 2);
+  for (const f of fragments) {
+    assert.ok(f.orbit, 'fragments stay in orbit');
+    assert.ok(Math.abs(f.orbit.radius - rock.orbit.radius) <= 34);
+  }
+  assert.notEqual(fragments[0].orbit.radius, fragments[1].orbit.radius);
+});
+
+test('loose rocks entering a well are streamed while they fall, and shatter on the surface', () => {
+  const { game, planet } = planetGame();
+  const rock = spawnAsteroid(game, 1, planet.x + planet.range + 40, planet.y, -120, 0);
+  game.step();
+  assert.equal(rock.streamed, false, 'outside the well it drifts in a straight line');
+  let enteredAt = -1;
+  for (let i = 0; i < 60 * 30 && !rock.dead; i++) {
+    game.step();
+    if (rock.streamed && enteredAt < 0) enteredAt = game.tick;
+  }
+  assert.ok(enteredAt > 0, 'streamed once inside the well');
+  assert.ok(rock.dead, 'eventually crashed');
+  assert.equal(rock.removeReason, RemoveReason.DESTROYED);
+});
+
+test('players, asteroids and aliens never spawn inside gravity wells', () => {
+  const { game, planet } = planetGame(200, 1);
+  for (let i = 0; i < 50; i++) {
+    const spot = findOpenSpot(game, 900, 24, true);
+    assert.ok(Math.hypot(spot.x - planet.x, spot.y - planet.y) > planet.range, 'outside the well');
+  }
 });

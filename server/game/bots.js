@@ -33,6 +33,7 @@ export class BotBrain {
     this.mode = Mode.WANDER;
     this.target = null;
     this.danger = null;
+    this.planet = null;
     this.wanderAngle = rng() * TAU;
     this.noise = 0;
     this.noiseTarget = 0;
@@ -108,6 +109,15 @@ export class BotBrain {
       this.wanderAngle += (this.rng() - 0.5) * 0.8;
     }
     this.danger = dangerDist < 110 ? danger : null;
+    this.planet = null;
+    let planetGap = 220;
+    for (const p of game.planets) {
+      const gap = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE)) - p.radius;
+      if (gap < planetGap) {
+        planetGap = gap;
+        this.planet = p;
+      }
+    }
     this.noiseTarget = (this.rng() * 2 - 1) * this.aimJitter;
 
     while (ship.points > 0) {
@@ -180,6 +190,18 @@ export class BotBrain {
       if (Math.hypot(dx, dy) < d.radius + ship.radius + 70) {
         aim = Math.atan2(-dy, -dx);
         buttons = (buttons & Button.FIRE) | Button.AIM | Button.THRUST;
+      }
+    }
+    // Pull up before hitting a planet; gravity makes a dive hard to recover from.
+    const p = this.planet;
+    if (p) {
+      const dx = wrapDelta(p.x - ship.x, WORLD_SIZE);
+      const dy = wrapDelta(p.y - ship.y, WORLD_SIZE);
+      const dist = Math.hypot(dx, dy) || 1;
+      const closing = (ship.vx * dx + ship.vy * dy) / dist;
+      if (dist - p.radius < 90 + Math.max(0, closing) * 0.45) {
+        aim = Math.atan2(-dy, -dx);
+        buttons = (buttons & Button.FIRE) | Button.AIM | Button.THRUST | (closing > 150 ? Button.BOOST : 0);
       }
     }
     this.buttons = buttons;

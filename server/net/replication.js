@@ -93,7 +93,7 @@ export function buildSnapshot(game, session, out, leader) {
     const e = visible[i];
     if (e === ship) continue; // the SELF block covers it
     const sent = known.get(e);
-    if (sent === undefined || (e.mask & STREAMED) !== 0 || sent !== e.version) {
+    if (sent === undefined || (e.mask & STREAMED) !== 0 || e.streamed || sent !== e.version) {
       out.entity(e, viewerId, game.tick);
       known.set(e, e.version);
     }

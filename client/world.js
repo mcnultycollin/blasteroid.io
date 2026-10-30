@@ -21,6 +21,7 @@ import {
   TICK_RATE,
   WORLD_SIZE,
 } from '../shared/constants.js';
+import { createPlanet, insidePlanet, orbitAngularSpeed, orbitState, stepBallistic } from '../shared/gravity.js';
 import { TAU, clamp, createRng, hash32, lerpAngle, wrap, wrapDelta, wrapLerp } from '../shared/math.js';
 import { NO_ID, readEntity, readSnapshot } from '../shared/protocol.js';
 
@@ -113,6 +114,10 @@ export class ClientEntity {
     this.own = false;
     this.fireSeq = 0;
     this.muzzle = 0;
+    this.orbit = null; // asteroid on a circular orbit: position is a function of time
+    this.streamed = false; // asteroid falling inside a gravity well: extrapolated with gravity
+    this.sim = null; // that asteroid's gravity extrapolation state ({x, y, vx, vy} at simTick)
+    this.simTick = 0;
     // Interpolation history for ships and aliens: [tick, x, y, angle] per sample
     this.hist = type === EntityType.SHIP || type === EntityType.ALIEN ? new Float64Array(HISTORY * 4) : null;
     this.histCount = 0;
@@ -169,6 +174,7 @@ export class ClientWorld {
     this.roster = new Map(); // playerId -> { name, hue }
     this.ghosts = [];
     this.clock = new ServerClock();
+    this.planets = [];
     this.tick = 0; // tick of the snapshot being decoded / last decoded
     this.myShipId = NO_ID;
     this.snapshotCount = 0;
@@ -178,11 +184,17 @@ export class ClientWorld {
   }
 
   reset() {
+    this.planets = [];
     this.entities.clear();
     this.roster.clear();
     this.ghosts.length = 0;
     this.clock = new ServerClock();
     this.myShipId = NO_ID;
+  }
+
+  /** Planets arrive once, in the welcome message; they never move. */
+  setPlanets(list) {
+    this.planets = list.map((p, i) => createPlanet(i, p.x, p.y, p.radius, p.density, p.name));
   }
 
   /* Roster ------------------------------------------------------------------ */
@@ -242,6 +254,7 @@ export class ClientWorld {
     readEntity(type, reader, e);
     e.t0 = this.tick;
     if (e.hist) e.pushSample(this.tick, e.x, e.y, e.angle);
+    if (type === EntityType.ASTEROID) this.prepareAsteroidMotion(e);
     if (!created) {
       if (e.hpFrac < previousHp - 0.001) {
         e.hitFlash = 1;
@@ -268,6 +281,21 @@ export class ClientWorld {
 
   event(ev) {
     this.events.event(ev);
+  }
+
+  prepareAsteroidMotion(e) {
+    if (e.orbit) {
+      const planet = this.planets[e.orbit.planet];
+      if (planet) e.orbit.omega = orbitAngularSpeed(planet, e.orbit.radius);
+      else e.orbit = null; // unknown planet: should not happen, but never crash on it
+    } else if (e.streamed) {
+      const sim = e.sim ?? (e.sim = { x: 0, y: 0, vx: 0, vy: 0 });
+      sim.x = e.x;
+      sim.y = e.y;
+      sim.vx = e.vx;
+      sim.vy = e.vy;
+      e.simTick = e.t0;
+    }
   }
 
   end() {}
@@ -341,7 +369,15 @@ export class ClientWorld {
           if (!interpolate(e, renderTick)) this.netStats.extrapolations++;
           break;
         case EntityType.ASTEROID:
-          extrapolate(e, presentTick);
+          if (e.orbit) {
+            orbitState(this.planets[e.orbit.planet], e.orbit, presentTick, orbitScratch);
+            e.rx = orbitScratch.x;
+            e.ry = orbitScratch.y;
+          } else if (e.streamed) {
+            this.extrapolateBallistic(e, presentTick);
+          } else {
+            extrapolate(e, presentTick);
+          }
           e.ra = (e.seed % 628) / 100 + e.spin * presentTick * TICK_DT;
           break;
         case EntityType.PICKUP:
@@ -355,7 +391,8 @@ export class ClientWorld {
             t = renderTick + (presentTick - renderTick) * k;
           }
           extrapolate(e, t);
-          e.visible = t >= e.birth && t - e.t0 <= e.life && !e.predictedHit;
+          if (e.own) this.predictPlanetImpact(e);
+          e.visible = t >= e.birth && t - e.t0 <= e.life && !e.predictedHit && !insidePlanet(e.rx, e.ry, 0, this.planets);
           break;
         }
       }
@@ -364,6 +401,7 @@ export class ClientWorld {
     for (let i = this.ghosts.length - 1; i >= 0; i--) {
       const g = this.ghosts[i];
       extrapolate(g, presentTick);
+      if (presentTick >= g.birth) this.predictPlanetImpact(g);
       g.visible = presentTick >= g.birth && !g.predictedHit;
       if (presentTick - g.t0 > Math.min(g.life, GHOST_TIMEOUT)) {
         this.ghosts.splice(i, 1);
@@ -371,7 +409,34 @@ export class ClientWorld {
       }
     }
   }
+
+  /** Our shots hitting a planet are predictable (planets never move): show the impact immediately. */
+  predictPlanetImpact(e) {
+    if (!e.predictedHit && insidePlanet(e.rx, e.ry, 0, this.planets)) {
+      e.predictedHit = true;
+      this.events.predictedImpact(e.rx, e.ry);
+    }
+  }
+
+  /**
+   * Advances a falling asteroid's gravity simulation to `t`, from the last
+   * streamed state, using the same stepBallistic() as the server. Fresh states
+   * arrive every snapshot, so the horizon is only a few ticks.
+   */
+  extrapolateBallistic(e, t) {
+    const sim = e.sim;
+    const target = Math.floor(t);
+    for (let steps = 0; e.simTick < target && steps < 60; steps++) {
+      stepBallistic(sim, this.planets);
+      e.simTick++;
+    }
+    const dt = (t - e.simTick) * TICK_DT;
+    e.rx = wrap(sim.x + sim.vx * dt, WORLD_SIZE);
+    e.ry = wrap(sim.y + sim.vy * dt, WORLD_SIZE);
+  }
 }
+
+const orbitScratch = { x: 0, y: 0, vx: 0, vy: 0 };
 
 function extrapolate(e, t) {
   const dt = (t - e.t0) * TICK_DT;

@@ -4,7 +4,7 @@
  * tuning (spawn rates, rewards, AI) lives in server/game/tuning.js.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /* Timing ------------------------------------------------------------------ */
 
@@ -86,7 +86,7 @@ export const Button = Object.freeze({
 
 /* Messages ---------------------------------------------------------------- */
 
-export const KillCause = Object.freeze({ SHIP: 0, ASTEROID: 1, ALIEN: 2, MOTHERSHIP: 3, RAM: 4 });
+export const KillCause = Object.freeze({ SHIP: 0, ASTEROID: 1, ALIEN: 2, MOTHERSHIP: 3, RAM: 4, PLANET: 5 });
 export const Announce = Object.freeze({
   MOTHERSHIP_INBOUND: 1,
   MOTHERSHIP_DESTROYED: 2,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Button, SHIP_NOSE, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import { createPlanet } from '../shared/gravity.js';
 import { createRng } from '../shared/math.js';
 import { StepResult, computeShots, copyShipState, createShipState, stepShip } from '../shared/physics.js';
 import { dqAngle, qAngle } from '../shared/protocol.js';
@@ -107,4 +108,33 @@ test('prediction replay from an acknowledged state reproduces the authority exac
     for (let i = ack + 1; i < commands.length; i++) stepShip(replay, commands[i].buttons, commands[i].aim, st);
     assert.deepEqual(replay, client, `replay from ack ${ack} matches`);
   }
+});
+
+test('gravity and planet landings are predicted exactly too', () => {
+  const planet = createPlanet(0, 1300, 1000, 140, 2, 'P');
+  const rng = createRng(99);
+  const commands = [];
+  for (let i = 0; i < 900; i++) commands.push({ buttons: Math.floor(rng() * 128), aim: dqAngle(qAngle(rng() * Math.PI * 2)) });
+  const server = freshShip();
+  const client = freshShip();
+  const history = [];
+  let impacts = 0;
+  for (const c of commands) {
+    if (stepShip(server, c.buttons, c.aim, st, [planet]) & StepResult.IMPACT) impacts++;
+    history.push(copyShipState({}, server));
+    stepShip(client, c.buttons, c.aim, st, [planet]);
+  }
+  assert.ok(impacts > 0, 'the random walk touched the planet');
+  const replay = copyShipState({}, history[400]);
+  for (let i = 401; i < commands.length; i++) stepShip(replay, commands[i].buttons, commands[i].aim, st, [planet]);
+  assert.deepEqual(replay, client);
+});
+
+test('an unpowered ship drifts into a planet and comes to rest on it', () => {
+  const planet = createPlanet(0, 1300, 1000, 140, 1, 'P');
+  const s = freshShip();
+  for (let i = 0; i < TICK_RATE * 8; i++) stepShip(s, 0, 0, st, [planet]);
+  const height = Math.hypot(s.x - 1300, s.y - 1000) - 140;
+  assert.ok(height < 17, `resting on the surface (height ${height.toFixed(2)})`);
+  assert.ok(Math.hypot(s.vx, s.vy) < 5, 'settled');
 });

@@ -77,6 +77,22 @@ export const MOTHERSHIP = Object.freeze({
   minShips: 4,
 });
 
+export const PLANETS = Object.freeze({
+  count: 3,
+  spacing: 500, // clear space between neighbouring gravity wells
+  // One planet of each type: [min, max] radius and density. Mass ∝ density × radius³.
+  types: [
+    { radius: [200, 250], density: [0.4, 0.65] }, // gas giant: huge and light, gentle pull
+    { radius: [120, 170], density: [0.9, 1.4] }, // rocky world
+    { radius: [70, 95], density: [3.0, 3.8] }, // dense core: small, but pulls hardest (may out-pull base thrust)
+  ],
+  orbitClearance: 45, // gap between the surface and the innermost orbit
+  orbitReach: 0.8, // outermost orbit, as a fraction of the gravity range
+  beltMassPerRange: 1 / 28, // orbiting rock mass kept around a planet, per unit of range
+  crashSafeSpeed: 120, // touching down slower than this is a landing
+  crashDamage: 0.22, // hull damage per unit of impact speed above the safe speed
+});
+
 export const PICKUP = Object.freeze({
   orbLife: seconds(45),
   powerupLife: seconds(60),

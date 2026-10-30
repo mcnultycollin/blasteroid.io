@@ -41,6 +41,7 @@ export class Predictor {
     this.lastResult = 0;
     this.corrections = 0; // reconciliations that moved the ship (collisions, knockback, loss)
     this.lastCorrection = 0;
+    this.planets = []; // static, from the welcome message; gravity is predicted exactly
   }
 
   setStats(stats) {
@@ -87,7 +88,7 @@ export class Predictor {
     this.pendingCount++;
     copyShipState(this.prev, this.state);
     this.lastButtons = buttons;
-    this.lastResult = stepShip(this.state, buttons, aim, this.st);
+    this.lastResult = stepShip(this.state, buttons, aim, this.st, this.planets);
     return this.lastResult;
   }
 
@@ -104,7 +105,7 @@ export class Predictor {
     for (let k = 0; k < this.pendingCount; k++) {
       const i = (this.pendingHead + k) % MAX_PENDING;
       if (k === this.pendingCount - 1) copyShipState(this.prev, this.state);
-      stepShip(this.state, this.pendingButtons[i], this.pendingAim[i], this.st);
+      stepShip(this.state, this.pendingButtons[i], this.pendingAim[i], this.st, this.planets);
     }
     const dx = wrapDelta(oldX - this.state.x, WORLD_SIZE);
     const dy = wrapDelta(oldY - this.state.y, WORLD_SIZE);

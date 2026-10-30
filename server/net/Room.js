@@ -48,7 +48,7 @@ export class Room {
   attach(session) {
     this.sessions.add(session);
     session.room = this;
-    session.send(encodeWelcome(this.writer, this.game.tick, this.id));
+    session.send(encodeWelcome(this.writer, this.game.tick, this.id, this.game.planets));
     const players = [...this.game.players.values()];
     for (let i = 0; i < players.length; i += 255) {
       session.send(encodeRoster(this.writer, players.slice(i, i + 255)));

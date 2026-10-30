@@ -33,6 +33,12 @@ Requires Node.js 20 or newer. The only runtime dependency is
 - **At level 10** pick a weapon: *Twin* (parallel shots), *Scatter*
   (three-way spread) or *Cannon* (slow, heavy, long range).
 - **Power-ups**: Shield, Rapid fire, Repair and Overdrive (unlimited boost).
+- **Planets**: each has a gravity well, shown as a dashed ring, that tugs
+  your ship and holds a belt of orbiting rocks. A planet's mass comes from
+  its size × density, so small dense cores pull hardest near the surface
+  (sometimes harder than your engines; the HUD shows the pull as a share of
+  your thrust). Touch down gently to land; crash fast and it hurts. Planets
+  also block shots, so you can hide behind them.
 - **Aliens**: saucers spray shots, hunters lead their aim and go after
   leaders. Every few minutes a **Mothership** arrives with radial barrages
   and hunter escorts; destroying it pays out big.
@@ -100,6 +106,15 @@ predicted and later matched to the server's projectiles by input sequence
 number. Other players' shots leave their muzzle and then catch up to the
 present.
 
+**Gravity.** Planets never move, and every client receives them once. Gravity,
+landing and bouncing all live in the shared ship physics, so your ship's
+motion near a planet is predicted exactly, with no corrections. Gravity math
+uses only operations that IEEE 754 makes bit-identical in every browser.
+Belt rocks ride exact circular orbits, so each one is sent once as orbit
+parameters and drawn analytically. Only rocks knocked loose inside a well are
+streamed every snapshot; orbital decay makes them spiral in and crash, so they
+never pile up.
+
 **Bandwidth.** A compact binary protocol runs over raw WebSockets with
 compression off for latency. Positions are 16-bit, and your own ship is sent
 at full precision. Snapshots go out at 30 Hz with per-client interest
@@ -111,13 +126,34 @@ the right effect.
 ## Performance
 
 `npm run bench` runs a full room of bots and encodes a snapshot for every
-player, as if each were connected. Measured on the development container:
+player, as if each were connected. Measured on the development container,
+with planets:
 
 | Players | Simulation per tick | Snapshots per round | CPU (one core) | Snapshot size | Per-client downstream |
 | --- | --- | --- | --- | --- | --- |
-| 20 | 0.08 ms | 0.13 ms | 0.9% | 94 B | 2.8 KiB/s |
-| 40 | 0.18 ms | 0.42 ms | 2.4% | 129 B | 3.8 KiB/s |
-| 80 | 0.35 ms | 1.27 ms | 5.9% | 190 B | 5.6 KiB/s |
+| 40 | 0.22 ms | 0.47 ms | 2.7% | 133 B | 3.9 KiB/s |
+| 80 | 0.50 ms | 1.55 ms | 7.6% | 198 B | 5.8 KiB/s |
+| 160 | 0.94 ms | 4.16 ms | 18% | 338 B | 9.9 KiB/s |
+| 320 | 1.84 ms | 11.6 ms | 46% | 566 B | 16.6 KiB/s |
+
+**Room size and lag.** Players only receive what is on their screen, so
+per-player bandwidth depends on how crowded the arena is, not on how many
+people are in the room. Growing the arena with the player count keeps it flat.
+Measured with a 4× larger arena:
+
+| Arena | Players | CPU (one core) | Per-client downstream |
+| --- | --- | --- | --- |
+| 6144² | 40 | 2.7% | 3.9 KiB/s |
+| 12288² | 160 | 12% | 3.8 KiB/s |
+| 6144² | 80 | 7.6% | 5.8 KiB/s |
+| 12288² | 320 | 32% | 5.7 KiB/s |
+
+Room size adds no latency until a room's work per tick approaches the
+16.7 ms tick budget. Before that, ping and the ~70 ms interpolation buffer
+dominate what players feel. Cramming more players into the same arena costs
+roughly quadratically, because everyone sees more. The arena size is
+`WORLD_SIZE` in `shared/constants.js`; positions are 16-bit, which stays
+precise to about 0.2 units up to a 12288² arena.
 
 Collision checks and interest queries use a uniform spatial grid, so cost grows
 with local density rather than with the square of the entity count. Rooms are
@@ -156,6 +192,9 @@ small rooms stay lively. Set `BOTS=0` to turn them off.
 
 - **Balance**: player-facing numbers (stats, weapons, levels) live in
   `shared/stats.js`, everything else in `server/game/tuning.js`.
+- **Planets**: count, sizes, densities, belts and crash damage are in
+  `PLANETS` (`server/game/tuning.js`); the gravity law (strength, range, fade,
+  landing) is in `GRAVITY` (`shared/gravity.js`).
 - **New weapon**: add an entry to `WEAPONS` in `shared/stats.js` (muzzles,
   multipliers) and list it in `WEAPON_CHOICES`. Prediction picks it up
   automatically.

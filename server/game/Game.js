@@ -14,6 +14,7 @@ import { killShip } from './combat.js';
 import { IdPool } from './IdPool.js';
 import { randomName } from './names.js';
 import { maintainPickups, updatePickups } from './pickups.js';
+import { generatePlanets, maintainBelts, seedBelts } from './planets.js';
 import { Player } from './Player.js';
 import { chooseWeapon, collideShips, despawnShip, processShipInputs, updateShips, upgradeStat } from './ships.js';
 import { spawnShip } from './spawning.js';
@@ -42,7 +43,9 @@ export class Game {
     this.nextBotCheck = 0;
     /** Notable events for the network layer to broadcast; it clears them after each tick. */
     this.outbox = { roster: [], rosterRemoved: [], kills: [], deaths: [], announcements: [] };
+    this.planets = generatePlanets(this.rng);
     seedAsteroids(this);
+    seedBelts(this);
     this.rebuildGrid();
   }
 
@@ -123,6 +126,7 @@ export class Game {
     collideShips(this);
     collideAliens(this);
     maintainAsteroids(this);
+    maintainBelts(this);
     maintainAliens(this);
     maintainPickups(this);
     maintainBots(this);

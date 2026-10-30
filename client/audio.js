@@ -135,6 +135,12 @@ export class Sound {
     this.burst(out, 0.25 + 0.35 * Math.min(size, 2), 2600, 60);
   }
 
+  /** Our ship touching down on or slamming into a planet. */
+  thud(strength) {
+    const out = this.output('thud', 120, undefined, undefined, 0.15 + 0.25 * Math.min(strength, 1));
+    if (out) this.burst(out, 0.12 + 0.2 * Math.min(strength, 1), 500, 50);
+  }
+
   hit(x, y) {
     const out = this.output('hit', 50, x, y, 0.12);
     if (out) this.burst(out, 0.06, 6000, 1500, 'highpass');

@@ -35,6 +35,22 @@ const POWERUP_STYLE = {
 };
 const ORB_SIZE = [3, 4.5, 6];
 
+/** Colour and surface details for a planet, from its density (blue and light to red and dense). */
+function planetArt(p) {
+  const heat = Math.min(1, Math.max(0, (p.density - 0.4) / 3.2));
+  const hue = Math.round(215 - heat * 205);
+  const rng = createRng(p.id * 977 + 13);
+  const kind = p.density < 0.8 ? 'gas' : p.density < 2.5 ? 'rock' : 'core';
+  return {
+    kind,
+    fill: `hsl(${hue} 45% 9%)`,
+    outline: `hsl(${hue} 75% 62%)`,
+    detail: `hsla(${hue} 70% 60% / 0.45)`,
+    bands: [-0.62, -0.3, 0.05, 0.38, 0.66],
+    craters: Array.from({ length: 5 }, () => ({ x: rng() * 1.2 - 0.6, y: rng() * 1.2 - 0.6, r: 0.08 + rng() * 0.12 })),
+  };
+}
+
 export function playerColor(hue, lightness = 65) {
   return `hsl(${hue} 90% ${lightness}%)`;
 }
@@ -145,6 +161,7 @@ export class Renderer {
     }
     for (const g of world.ghosts) if (g.visible && this.cull(g, 10)) bullets.mine.push(g);
 
+    this.drawPlanets(world.planets, view.time);
     this.drawPickups(pickups, view.time);
     this.drawAsteroids(asteroids);
     this.drawBullets(bullets);
@@ -159,6 +176,82 @@ export class Renderer {
     e.dx = wrapDelta(e.rx - this.camX, WORLD_SIZE);
     e.dy = wrapDelta(e.ry - this.camY, WORLD_SIZE);
     return e.dx > -this.halfW - r && e.dx < this.halfW + r && e.dy > -this.halfH - r && e.dy < this.halfH + r;
+  }
+
+  /**
+   * Planets as vector globes, styled by density: light gas giants get bands
+   * and a ring, rocky worlds craters, dense cores a hot glowing heart. A faint
+   * dashed circle marks the edge of each planet's gravity.
+   */
+  drawPlanets(planets, time) {
+    const { ctx } = this;
+    for (const p of planets) {
+      const dx = wrapDelta(p.x - this.camX, WORLD_SIZE);
+      const dy = wrapDelta(p.y - this.camY, WORLD_SIZE);
+      if (Math.abs(dx) > this.halfW + p.range || Math.abs(dy) > this.halfH + p.range) continue;
+      const art = p.art ?? (p.art = planetArt(p));
+      const r = p.radius;
+
+      ctx.setLineDash([10, 16]);
+      ctx.strokeStyle = 'rgba(140, 170, 255, 0.18)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(dx, dy, p.range, 0, TAU);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(dx, dy, r, 0, TAU);
+      ctx.fillStyle = art.fill;
+      ctx.fill();
+      ctx.clip();
+      ctx.strokeStyle = art.detail;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (art.kind === 'gas') {
+        for (const band of art.bands) {
+          ctx.moveTo(dx - r, dy + band * r);
+          ctx.lineTo(dx + r, dy + band * r + 0.08 * r);
+        }
+      } else if (art.kind === 'rock') {
+        for (const c of art.craters) {
+          ctx.moveTo(dx + c.x * r + c.r * r, dy + c.y * r);
+          ctx.arc(dx + c.x * r, dy + c.y * r, c.r * r, 0, TAU);
+        }
+      } else {
+        const pulse = 0.85 + 0.15 * Math.sin(time * 3 + p.id);
+        ctx.moveTo(dx + r * 0.68 * pulse, dy);
+        ctx.arc(dx, dy, r * 0.68 * pulse, 0, TAU);
+        ctx.moveTo(dx + r * 0.36 * pulse, dy);
+        ctx.arc(dx, dy, r * 0.36 * pulse, 0, TAU);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.arc(dx, dy, r, 0, TAU);
+      ctx.strokeStyle = art.outline;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.globalAlpha = 0.25;
+      ctx.lineWidth = 8;
+      ctx.stroke(); // soft atmosphere glow
+      ctx.globalAlpha = 1;
+      if (art.kind === 'gas') {
+        ctx.beginPath();
+        ctx.ellipse(dx, dy, r * 1.55, r * 0.32, -0.35, 0, TAU);
+        ctx.strokeStyle = art.detail;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      ctx.font = `12px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillText(p.name.toUpperCase(), dx, dy - r - 14);
+    }
   }
 
   drawStars(camX, camY) {

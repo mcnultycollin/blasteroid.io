@@ -17,11 +17,14 @@ import {
 import { TAU, clamp, wrap, wrapDelta } from '../../shared/math.js';
 import { NO_ID } from '../../shared/protocol.js';
 import { WEAPON_UNLOCK_LEVEL, Weapon, deriveStats, levelForScore } from '../../shared/stats.js';
+import { orbitAngle, orbitState } from '../../shared/gravity.js';
+import { makeOrbit, orbitBand } from './planets.js';
 import { randomVelocity, spawnAsteroid, spawnPickup } from './spawning.js';
 import { ASTEROID, PICKUP, POWERUP, REWARD, SHIP } from './tuning.js';
 
 const POWERUP_KINDS = [PickupKind.SHIELD, PickupKind.RAPID, PickupKind.REPAIR, PickupKind.OVERDRIVE];
 const velocity = { vx: 0, vy: 0 };
+const scratchPoint = { x: 0, y: 0, vx: 0, vy: 0 };
 
 /* Score and stats ----------------------------------------------------------- */
 
@@ -148,7 +151,9 @@ export function destroyAsteroid(game, asteroid, attacker) {
   if (attacker && attacker.type === EntityType.SHIP) {
     awardScore(game, attacker, ASTEROID.score[size], asteroid.x, asteroid.y);
   }
-  if (size > 0) {
+  if (size > 0 && asteroid.orbit) {
+    splitOrbiter(game, asteroid);
+  } else if (size > 0) {
     const [minSpeed, maxSpeed] = ASTEROID.speed[size - 1];
     for (let i = 0; i < 2; i++) {
       randomVelocity(game.rng, minSpeed, maxSpeed, velocity);
@@ -165,6 +170,42 @@ export function destroyAsteroid(game, asteroid, attacker) {
     }
   }
   if (size === 2 && game.rng() < ASTEROID.powerupChance) dropPowerup(game, asteroid.x, asteroid.y);
+}
+
+/**
+ * Fragments of a belt rock take neighbouring circular orbits, one inside and
+ * one outside the parent's, so they drift apart naturally and stay cheap to
+ * replicate.
+ */
+function splitOrbiter(game, asteroid) {
+  const o = asteroid.orbit;
+  const planet = game.planets[o.planet];
+  const size = asteroid.size - 1;
+  const [minR, maxR] = orbitBand(planet, size);
+  const angle = orbitAngle(o, game.tick);
+  for (let i = 0; i < 2; i++) {
+    const offset = (i === 0 ? -1 : 1) * (12 + game.rng() * 22);
+    const orbit = makeOrbit(planet, clamp(o.radius + offset, minR, maxR), angle + (game.rng() - 0.5) * 0.08, game.tick, o.dir);
+    orbitState(planet, orbit, game.tick, scratchPoint);
+    const fragment = spawnAsteroid(game, size, scratchPoint.x, scratchPoint.y, scratchPoint.vx, scratchPoint.vy);
+    if (fragment) fragment.orbit = orbit;
+  }
+}
+
+/** Moves `point` to just outside any planet it lies within. */
+function clearOfPlanets(game, point, margin) {
+  for (const p of game.planets) {
+    const dx = wrapDelta(point.x - p.x, WORLD_SIZE);
+    const dy = wrapDelta(point.y - p.y, WORLD_SIZE);
+    const minD = p.radius + margin;
+    const dSq = dx * dx + dy * dy;
+    if (dSq < minD * minD) {
+      const d = Math.sqrt(dSq) || 1;
+      point.x = wrap(p.x + (dx / d) * minD, WORLD_SIZE);
+      point.y = wrap(p.y + (dy / d) * minD, WORLD_SIZE);
+    }
+  }
+  return point;
 }
 
 /* Aliens -------------------------------------------------------------------- */
@@ -209,14 +250,10 @@ export function dropOrbs(game, x, y, value) {
   for (let i = 0; i < count; i++) {
     const a = game.rng() * TAU;
     const d = 20 + game.rng() * 80;
-    spawnPickup(
-      game,
-      kind,
-      wrap(x + Math.cos(a) * d, WORLD_SIZE),
-      wrap(y + Math.sin(a) * d, WORLD_SIZE),
-      each,
-      PICKUP.orbLife,
-    );
+    scratchPoint.x = wrap(x + Math.cos(a) * d, WORLD_SIZE);
+    scratchPoint.y = wrap(y + Math.sin(a) * d, WORLD_SIZE);
+    clearOfPlanets(game, scratchPoint, 12);
+    spawnPickup(game, kind, scratchPoint.x, scratchPoint.y, each, PICKUP.orbLife);
   }
 }
 
@@ -224,14 +261,10 @@ export function dropPowerup(game, x, y, scatter = 0, kind = -1) {
   if (kind < 0) kind = POWERUP_KINDS[Math.floor(game.rng() * POWERUP_KINDS.length)];
   const a = game.rng() * TAU;
   const d = scatter * game.rng();
-  spawnPickup(
-    game,
-    kind,
-    wrap(x + Math.cos(a) * d, WORLD_SIZE),
-    wrap(y + Math.sin(a) * d, WORLD_SIZE),
-    0,
-    PICKUP.powerupLife,
-  );
+  scratchPoint.x = wrap(x + Math.cos(a) * d, WORLD_SIZE);
+  scratchPoint.y = wrap(y + Math.sin(a) * d, WORLD_SIZE);
+  clearOfPlanets(game, scratchPoint, 18);
+  spawnPickup(game, kind, scratchPoint.x, scratchPoint.y, 0, PICKUP.powerupLife);
 }
 
 export function collectPickup(game, ship, pickup) {

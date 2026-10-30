@@ -4,15 +4,18 @@
  * deterministic: the same state, input and stats must always produce the same
  * result. Keep it free of randomness, wall-clock time and side effects.
  */
-import { Button, MAX_SPEED, SHIP_NOSE, TICK_DT, WORLD_SIZE } from './constants.js';
+import { Button, MAX_SPEED, SHIP_NOSE, SHIP_RADIUS, TICK_DT, WORLD_SIZE } from './constants.js';
+import { applyGravity, collidePlanets } from './gravity.js';
 import { angleDiff, normalizeAngle, wrap } from './math.js';
 import { WEAPONS } from './stats.js';
 
-export const StepResult = Object.freeze({ FIRED: 1, THRUST: 2, BOOST: 4, BRAKE: 8 });
+export const StepResult = Object.freeze({ FIRED: 1, THRUST: 2, BOOST: 4, BRAKE: 8, IMPACT: 16 });
 
-/** The subset of ship state that prediction needs to simulate. */
+const NO_PLANETS = Object.freeze([]);
+
+/** The subset of ship state that prediction needs to simulate. `impact` is an output of the last step. */
 export function createShipState() {
-  return { x: 0, y: 0, vx: 0, vy: 0, angle: 0, energy: 0, cooldown: 0, boostLock: 0 };
+  return { x: 0, y: 0, vx: 0, vy: 0, angle: 0, energy: 0, cooldown: 0, boostLock: 0, impact: 0 };
 }
 
 export function copyShipState(to, from) {
@@ -24,14 +27,17 @@ export function copyShipState(to, from) {
   to.energy = from.energy;
   to.cooldown = from.cooldown;
   to.boostLock = from.boostLock;
+  to.impact = from.impact;
   return to;
 }
 
 /**
- * Advances a ship by one tick of input. Returns a StepResult bitmask; the
- * caller spawns projectiles when FIRED is set.
+ * Advances a ship by one tick of input, including planetary gravity and
+ * planet surface contact (both deterministic, since planets never move).
+ * Returns a StepResult bitmask; the caller spawns projectiles when FIRED is
+ * set and applies crash damage from `s.impact` when IMPACT is set.
  */
-export function stepShip(s, buttons, aim, st) {
+export function stepShip(s, buttons, aim, st, planets = NO_PLANETS) {
   let result = 0;
 
   const turn = st.turnRate * TICK_DT;
@@ -63,6 +69,8 @@ export function stepShip(s, buttons, aim, st) {
     s.vy += Math.sin(s.angle) * accel * TICK_DT;
   }
 
+  if (planets.length > 0) applyGravity(s, planets);
+
   let drag = st.dragFactor;
   if (buttons & Button.BRAKE) {
     drag = st.brakeFactor;
@@ -80,6 +88,8 @@ export function stepShip(s, buttons, aim, st) {
 
   s.x = wrap(s.x + s.vx * TICK_DT, WORLD_SIZE);
   s.y = wrap(s.y + s.vy * TICK_DT, WORLD_SIZE);
+  s.impact = planets.length > 0 ? collidePlanets(s, SHIP_RADIUS, planets) : 0;
+  if (s.impact > 0) result |= StepResult.IMPACT;
 
   if (s.cooldown > 0) s.cooldown--;
   if (buttons & Button.FIRE && s.cooldown === 0) {

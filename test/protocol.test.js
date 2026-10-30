@@ -21,6 +21,7 @@ import {
   dqVel,
   encodeLeaderboard,
   encodeRoster,
+  encodeWelcome,
   qAngle,
   qPos,
   qVel,
@@ -28,6 +29,7 @@ import {
   readLeaderboard,
   readRoster,
   readSnapshot,
+  readWelcome,
 } from '../shared/protocol.js';
 
 test('writer and reader round-trip primitives and strings', () => {
@@ -159,4 +161,40 @@ test('snapshot round-trips every section and entity type', () => {
   assert.equal(got.events[1].killed, true);
   assert.equal(got.events[2].amount, 8);
   assert.ok(got.ended);
+});
+
+test('welcome carries the planets at full precision', () => {
+  const planets = [{ x: 1234.5, y: 99.25, radius: 151, density: 1.33, name: 'Orin II' }];
+  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, planets));
+  assert.equal(r.u8(), ServerMsg.WELCOME);
+  const w = readWelcome(r);
+  assert.equal(w.tick, 77);
+  assert.deepEqual(w.planets, planets);
+});
+
+test('asteroid records carry orbits exactly, or positions for free and falling rocks', () => {
+  const phase = dqAngle(12345); // the server snaps phases to the wire encoding
+  const orbiting = { id: 1, type: EntityType.ASTEROID, size: 2, orbit: { planet: 2, radius: 287, phase, epoch: 4000000, dir: -1 }, streamed: false };
+  const falling = { id: 2, type: EntityType.ASTEROID, size: 0, orbit: null, streamed: true, x: 10, y: 20, vx: -3, vy: 4 };
+  const out = new SnapshotWriter(new BinaryWriter());
+  out.begin(1, 0);
+  out.beginList();
+  out.endList();
+  out.beginList();
+  out.entity(orbiting, NO_ID, 1);
+  out.entity(falling, NO_ID, 1);
+  out.endList();
+  out.events([]);
+  const records = [];
+  const r = new BinaryReader(out.finish());
+  r.u8();
+  readSnapshot(r, {
+    begin() {}, self() {}, stats() {}, spectate() {}, remove() {}, event() {}, end() {},
+    entity: (type, id, reader) => records.push(readEntity(type, reader, {})),
+  });
+  assert.deepEqual(records[0].orbit, { planet: 2, radius: 287, phase, epoch: 4000000, dir: -1, omega: 0 });
+  assert.equal(records[0].size, 2);
+  assert.equal(records[1].orbit, null);
+  assert.equal(records[1].streamed, true);
+  assert.equal(records[1].vy, 4);
 });

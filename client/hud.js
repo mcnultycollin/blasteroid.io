@@ -5,6 +5,7 @@
  * Clickable areas are recorded while drawing and resolved by hitTest().
  */
 import { EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import { gravityAt } from '../shared/gravity.js';
 import { TAU, clamp, wrapDelta } from '../shared/math.js';
 import { MAX_LEVEL, STAT_COUNT, STAT_INFO, STAT_MAX, WEAPONS, WEAPON_CHOICES, scoreForLevel } from '../shared/stats.js';
 import { playerColor } from './renderer.js';
@@ -31,6 +32,8 @@ export class Hud {
     this.hitAreas = [];
     this.uiScale = 1;
     this.upgradePanelTop = 0;
+    this.pull = { x: 0, y: 0 };
+    this.gravity = null; // { name, ratio, color } while inside a gravity well
   }
 
   /* Feeds --------------------------------------------------------------------- */
@@ -79,9 +82,11 @@ export class Hud {
     const W = v.width / s;
     const H = v.height / s;
 
+    this.gravity = null;
     if (v.playing) {
       this.drawOffscreenMarkers(v);
       this.drawDamageMarks(v);
+      this.drawGravity(v);
       this.drawVignette(v);
     }
     ctx.setTransform(dpr * s, 0, 0, dpr * s, 0, 0);
@@ -92,6 +97,7 @@ export class Hud {
       this.drawUpgrades(ctx, v, W, H);
       this.drawWeaponChoice(ctx, v, W, H);
       this.drawPowerups(ctx, v, W, H);
+      this.drawGravityLabel(ctx, W, H);
     }
     this.drawLeaderboard(ctx, v, W);
     this.drawMinimap(ctx, v, W, H);
@@ -307,6 +313,16 @@ export class Hud {
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+    for (const p of v.planets ?? []) {
+      ctx.beginPath();
+      ctx.arc(x + p.x * k, y + p.y * k, Math.max(2.5, p.radius * k), 0, TAU);
+      ctx.fillStyle = 'rgba(170,185,255,0.55)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x + p.x * k, y + p.y * k, p.range * k, 0, TAU);
+      ctx.strokeStyle = 'rgba(140,170,255,0.2)';
+      ctx.stroke();
+    }
     // Visible area, wrapped around the torus and clipped to the map
     const vw = (v.width / v.scale) * k;
     const vh = (v.height / v.scale) * k;
@@ -389,6 +405,47 @@ export class Hud {
     ctx.fillStyle = 'rgba(255,255,255,0.4)';
     const y = v.playing && v.stats ? this.upgradePanelTop - 8 : H - MARGIN;
     ctx.fillText(`${Math.round(v.ping)} ms  ${Math.round(v.fps)} fps`, MARGIN, y);
+  }
+
+  /**
+   * Inside a gravity well: a chevron beside the ship pointing at the pull,
+   * sized by its strength relative to our thrust (red means boost to escape).
+   */
+  drawGravity(v) {
+    if (!v.planets || v.planets.length === 0) return;
+    const planet = gravityAt(v.shipX, v.shipY, v.planets, this.pull);
+    if (!planet) return;
+    const ratio = Math.hypot(this.pull.x, this.pull.y) / v.st.thrust;
+    const color = ratio < 0.5 ? '#7dff6a' : ratio < 0.85 ? '#ffd166' : '#ff4d4d';
+    this.gravity = { name: planet.name, ratio, color };
+    const { ctx, dpr } = v;
+    const angle = Math.atan2(this.pull.y, this.pull.x);
+    const size = 5 + Math.min(ratio, 1.2) * 9;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    ctx.translate(v.shipScreen.x + Math.cos(angle) * 54, v.shipScreen.y + Math.sin(angle) * 54);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.6, -size * 0.8);
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.6, size * 0.8);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawGravityLabel(ctx, W, H) {
+    const g = this.gravity;
+    if (!g) return;
+    const barW = Math.min(440, W - 2 * MARGIN);
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = g.color;
+    ctx.fillText(`${g.name.toUpperCase()} GRAVITY  ${Math.round(g.ratio * 100)}% OF THRUST`, (W + barW) / 2, H - MARGIN - 52 - 14);
   }
 
   /** Netcode diagnostics (toggle with F3). */

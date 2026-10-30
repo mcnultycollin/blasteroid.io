@@ -2,10 +2,11 @@
 import { Button } from '../shared/constants.js';
 import { Game } from '../server/game/Game.js';
 
-/** A game with no asteroids, aliens or pickups, so tests control everything in it. */
+/** A game with no planets, asteroids, aliens or pickups, so tests control everything in it. */
 export function emptyGame(seed = 1) {
   const game = new Game({ seed, botTarget: 0 });
   game.nextMothershipTick = Infinity;
+  game.planets = []; // tests that need gravity add their own planet
   clearWorld(game);
   return game;
 }

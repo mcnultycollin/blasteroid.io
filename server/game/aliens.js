@@ -1,11 +1,12 @@
 /** Alien saucers, hunters and the mothership world event. */
 import { AlienKind, Announce, BulletKind, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
+import { applyGravity, collidePlanets } from '../../shared/gravity.js';
 import { TAU, interceptTime, wrap, wrapDelta } from '../../shared/math.js';
 import { NO_ID } from '../../shared/protocol.js';
 import { damageAlien, damageAsteroid } from './combat.js';
 import { Mask } from './entities.js';
 import { findOpenSpot, spawnAlien, spawnBullet } from './spawning.js';
-import { ALIEN_SPAWN, MOTHERSHIP, seconds } from './tuning.js';
+import { ALIEN_SPAWN, MOTHERSHIP, PLANETS, seconds } from './tuning.js';
 
 const nearby = [];
 const shot = { x: 0, y: 0, vx: 0, vy: 0 };
@@ -46,8 +47,18 @@ export function updateAliens(game) {
     const k = Math.min(1, def.agility * TICK_DT);
     al.vx += (desX * def.speed + al.avoidX - al.vx) * k;
     al.vy += (desY * def.speed + al.avoidY - al.vy) * k;
+    const grounded = al.kind !== AlienKind.MOTHERSHIP; // the mothership flies above it all
+    if (grounded) applyGravity(al, game.planets);
     al.x = wrap(al.x + al.vx * TICK_DT, WORLD_SIZE);
     al.y = wrap(al.y + al.vy * TICK_DT, WORLD_SIZE);
+    if (grounded) {
+      const impact = collidePlanets(al, al.radius, game.planets);
+      if (impact > PLANETS.crashSafeSpeed && al.contactCooldown === 0) {
+        al.contactCooldown = seconds(0.5);
+        damageAlien(game, al, (impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage, null);
+        if (al.dead) continue;
+      }
+    }
 
     if (al.fireCooldown > 0) al.fireCooldown--;
     if (t && al.fireCooldown === 0 && dist < def.fireRange) {
@@ -86,6 +97,17 @@ function think(game, al) {
   al.avoidX = 0;
   al.avoidY = 0;
   if (al.kind === AlienKind.MOTHERSHIP) return; // flies above the field
+  for (const p of game.planets) {
+    const dx = wrapDelta(al.x - p.x, WORLD_SIZE);
+    const dy = wrapDelta(al.y - p.y, WORLD_SIZE);
+    const d = Math.hypot(dx, dy) || 1;
+    const clear = p.radius + al.radius + 180;
+    if (d < clear) {
+      const push = ((clear - d) / 180) * def.speed * 2;
+      al.avoidX += (dx / d) * push;
+      al.avoidY += (dy / d) * push;
+    }
+  }
   nearby.length = 0;
   game.grid.query(al.x, al.y, 200, 200, Mask.ASTEROID, nearby);
   for (const a of nearby) {
@@ -205,7 +227,7 @@ export function maintainAliens(game) {
       ALIEN_SPAWN.base + Math.floor(game.liveShipCount() / ALIEN_SPAWN.shipsPerAlien),
     );
     if (regulars < wanted) {
-      const spot = findOpenSpot(game, ALIEN_SPAWN.minDistance, 12);
+      const spot = findOpenSpot(game, ALIEN_SPAWN.minDistance, 12, true);
       const kind = game.rng() < ALIEN_SPAWN.hunterChance ? AlienKind.HUNTER : AlienKind.SAUCER;
       spawnAlien(game, kind, spot.x, spot.y);
     }

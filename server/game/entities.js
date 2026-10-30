@@ -42,6 +42,7 @@ class Entity {
     this.removeReason = RemoveReason.GONE;
     this.collectorId = NO_ID;
     this.version = 0; // bumped when predictable motion changes and must be re-sent
+    this.streamed = false; // replicate every snapshot even if the version is unchanged
     this._q = 0; // spatial-grid query stamp
   }
 }
@@ -56,6 +57,7 @@ export class Ship extends Entity {
     this.energy = 0;
     this.cooldown = 0;
     this.boostLock = 0;
+    this.impact = 0; // planet impact speed from the last physics step
     // Combat
     this.hp = 0;
     this.maxHp = 0;
@@ -94,6 +96,7 @@ export class Asteroid extends Entity {
     super(EntityType.ASTEROID, ASTEROID_RADIUS[size]);
     this.size = size;
     this.hp = ASTEROID.hp[size];
+    this.orbit = null; // circular orbit around a planet (see shared/gravity.js), or null when free
   }
 }
 
