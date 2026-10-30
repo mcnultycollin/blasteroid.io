@@ -2,7 +2,7 @@
  * Network glue around one Game: decodes client messages, broadcasts the
  * game's outbox and sends each session its snapshot.
  */
-import { KickReason, MarkerKind, PROTOCOL_VERSION, SNAPSHOT_INTERVAL, TICK_RATE } from '../../shared/constants.js';
+import { Feature, KickReason, MarkerKind, PROTOCOL_VERSION, SNAPSHOT_INTERVAL, TICK_RATE } from '../../shared/constants.js';
 import {
   BinaryReader,
   BinaryWriter,
@@ -48,7 +48,8 @@ export class Room {
   attach(session) {
     this.sessions.add(session);
     session.room = this;
-    session.send(encodeWelcome(this.writer, this.game.tick, this.id, this.game.planets));
+    const features = this.options.devTools ? Feature.DEV_TOOLS : 0;
+    session.send(encodeWelcome(this.writer, this.game.tick, this.id, this.game.planets, features));
     const players = [...this.game.players.values()];
     for (let i = 0; i < players.length; i += 255) {
       session.send(encodeRoster(this.writer, players.slice(i, i + 255)));
@@ -94,6 +95,9 @@ export class Room {
         break;
       case ClientMsg.PING:
         session.send(encodePong(this.writer, r.u32(), game.tick));
+        break;
+      case ClientMsg.STEALTH:
+        if (player && this.options.devTools) player.stealth = !player.stealth;
         break;
       default:
         throw new RangeError(`unknown message type ${type}`);

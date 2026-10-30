@@ -32,6 +32,7 @@ export class Ui {
     this.deathStats = $('death-stats');
     this.againButton = $('again');
     this.toast = $('toast');
+    this.devHint = $('dev-hint');
 
     this.nameInput.value = readStorage(NAME_KEY);
     this.form.addEventListener('submit', (e) => {
@@ -64,6 +65,10 @@ export class Ui {
   hideMenu() {
     this.menu.classList.add('hidden');
     this.nameInput.blur();
+  }
+
+  setDevTools(enabled) {
+    this.devHint.classList.toggle('hidden', !enabled);
   }
 
   setStatus(text) {

@@ -19,7 +19,7 @@ export function updateAliens(game) {
     if (al.contactCooldown > 0) al.contactCooldown--;
     if (--al.thinkCooldown <= 0) think(game, al);
 
-    const t = al.target && !al.target.dead ? al.target : null;
+    const t = al.target && !al.target.dead && !al.target.player.stealth ? al.target : null;
     let desX;
     let desY;
     let dist = Infinity;
@@ -78,7 +78,7 @@ function think(game, al) {
   let bestScore = Infinity;
   const aggroSq = def.aggroRange * def.aggroRange;
   for (const s of game.ships) {
-    if (s.dead) continue;
+    if (s.dead || s.player.stealth) continue;
     const dx = wrapDelta(s.x - al.x, WORLD_SIZE);
     const dy = wrapDelta(s.y - al.y, WORLD_SIZE);
     const d = dx * dx + dy * dy;

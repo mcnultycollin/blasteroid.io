@@ -165,10 +165,11 @@ test('snapshot round-trips every section and entity type', () => {
 
 test('welcome carries the planets at full precision', () => {
   const planets = [{ x: 1234.5, y: 99.25, radius: 151, density: 1.33, name: 'Orin II' }];
-  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, planets));
+  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, planets, 1));
   assert.equal(r.u8(), ServerMsg.WELCOME);
   const w = readWelcome(r);
   assert.equal(w.tick, 77);
+  assert.equal(w.features, 1);
   assert.deepEqual(w.planets, planets);
 });
 

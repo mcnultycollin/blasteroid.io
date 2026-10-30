@@ -12,6 +12,7 @@ import {
   BulletKind,
   EntityType,
   EventKind,
+  Feature,
   KickReason,
   KillCause,
   PROTOCOL_VERSION,
@@ -89,6 +90,7 @@ class GameClient {
     this.lastLevel = 0;
     this.hadWeaponChoice = false;
     this.debug = null; // netgraph data while F3 is toggled on
+    this.devTools = false; // server allows testing aids (stealth)
     this.traffic = { at: performance.now(), bytes: 0, snapshots: 0, kbps: 0, snapshotsPerSecond: 0 };
 
     this.ui.setPlayEnabled(false);
@@ -129,6 +131,8 @@ class GameClient {
       },
       welcome: (w) => {
         if (w.version !== PROTOCOL_VERSION) this.ui.showToast(KICK_MESSAGES[KickReason.OUTDATED]);
+        this.devTools = (w.features & Feature.DEV_TOOLS) !== 0;
+        this.ui.setDevTools(this.devTools);
         this.world.setPlanets(w.planets);
         this.predictor.planets = this.world.planets;
       },
@@ -191,6 +195,10 @@ class GameClient {
       this.hadWeaponChoice = false;
     } else {
       p.reconcile(s, tick);
+    }
+    const stealth = (s.flags & ShipFlag.STEALTH) !== 0;
+    if (this.self && stealth !== ((this.self.flags & ShipFlag.STEALTH) !== 0)) {
+      this.hud.announce(stealth ? 'STEALTH ON' : 'STEALTH OFF', stealth ? 'Bots and aliens ignore you. Press I to reappear.' : '', '#b48cff', performance.now());
     }
     this.self = { hp: s.hp, shield: s.shield, energy: s.energy, boostLock: s.boostLock, flags: s.flags };
   }
@@ -417,6 +425,14 @@ class GameClient {
       },
       respawn: () => {
         if (this.state === State.DEAD && this.ui.deathVisible) this.play(this.ui.name());
+      },
+      toggleStealth: () => {
+        if (this.state !== State.PLAYING) return;
+        if (!this.devTools) {
+          this.hud.announce('STEALTH UNAVAILABLE', 'Dev tools are turned off on this server', '#b48cff', performance.now());
+          return;
+        }
+        this.net.toggleStealth();
       },
       toggleDebug: () => {
         this.debug = this.debug ? null : {};

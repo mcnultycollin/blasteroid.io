@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import WebSocket from 'ws';
-import { Button, KickReason, PROTOCOL_VERSION } from '../shared/constants.js';
+import { Button, Feature, KickReason, PROTOCOL_VERSION, ShipFlag } from '../shared/constants.js';
 import {
   BinaryReader,
   BinaryWriter,
@@ -9,6 +9,7 @@ import {
   encodeInput,
   encodeJoin,
   encodePing,
+  encodeStealth,
   readEntity,
   readSnapshot,
   readWelcome,
@@ -20,7 +21,7 @@ let base;
 
 before(async () => {
   process.env.LOG_LEVEL = 'silent';
-  app = await startServer({ port: 0, host: '127.0.0.1', botTarget: 0, production: false });
+  app = await startServer({ port: 0, host: '127.0.0.1', botTarget: 0, production: false, devTools: true });
   base = `127.0.0.1:${app.port}`;
 });
 
@@ -30,13 +31,13 @@ after(async () => {
 
 /** Minimal protocol client that records decoded messages. */
 class TestClient {
-  constructor() {
+  constructor(host = base) {
     this.writer = new BinaryWriter(64);
     this.messages = [];
     this.selves = [];
     this.waiters = [];
     this.closed = false;
-    this.ws = new WebSocket(`ws://${base}/ws`);
+    this.ws = new WebSocket(`ws://${host}/ws`);
     this.ws.binaryType = 'arraybuffer';
     this.ws.on('message', (data) => this.receive(data));
     this.ws.on('close', (code) => {
@@ -170,6 +171,34 @@ test('production mode serves compressed, cached assets', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-encoding'), 'br');
     assert.ok((await res.text()).includes('GameClient'), 'body decodes correctly');
+  } finally {
+    await prod.close();
+  }
+});
+
+test('stealth toggles only when the server has dev tools enabled', async () => {
+  const dev = new TestClient();
+  await dev.opened;
+  const welcome = await dev.waitFor(() => dev.messages.find((m) => m.type === ServerMsg.WELCOME));
+  assert.equal(welcome.features & Feature.DEV_TOOLS, Feature.DEV_TOOLS);
+  dev.send(encodeJoin(dev.writer, 'Dev'));
+  await dev.waitFor(() => dev.selves[0]);
+  dev.send(encodeStealth(dev.writer));
+  await dev.waitFor(() => dev.selves.find((s) => s.flags & ShipFlag.STEALTH));
+  dev.close();
+
+  const prod = await startServer({ port: 0, host: '127.0.0.1', botTarget: 0, devTools: false });
+  try {
+    const c = new TestClient(`127.0.0.1:${prod.port}`);
+    await c.opened;
+    const w = await c.waitFor(() => c.messages.find((m) => m.type === ServerMsg.WELCOME));
+    assert.equal(w.features & Feature.DEV_TOOLS, 0);
+    c.send(encodeJoin(c.writer, 'Player'));
+    await c.waitFor(() => c.selves[0]);
+    c.send(encodeStealth(c.writer));
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(c.selves.every((s) => !(s.flags & ShipFlag.STEALTH)), 'ignored without dev tools');
+    c.close();
   } finally {
     await prod.close();
   }

@@ -112,7 +112,8 @@ export function updateShips(game) {
       (ship.invuln > 0 ? ShipFlag.INVULN : 0) |
       (ship.shield > 0 ? ShipFlag.SHIELD : 0) |
       (ship.powerups[Powerup.RAPID] > 0 ? ShipFlag.RAPID : 0) |
-      (ship.powerups[Powerup.OVERDRIVE] > 0 ? ShipFlag.OVERDRIVE : 0);
+      (ship.powerups[Powerup.OVERDRIVE] > 0 ? ShipFlag.OVERDRIVE : 0) |
+      (ship.player.stealth ? ShipFlag.STEALTH : 0);
   }
 }
 

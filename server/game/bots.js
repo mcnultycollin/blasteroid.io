@@ -4,7 +4,7 @@
  * exactly the same movement, firing and upgrade code as humans.
  */
 import { Button, EntityType, TICK_RATE, WORLD_SIZE } from '../../shared/constants.js';
-import { TAU, angleDiff, interceptTime, normalizeAngle, wrapDelta } from '../../shared/math.js';
+import { TAU, angleDiff, interceptTime, lerp, normalizeAngle, wrapDelta } from '../../shared/math.js';
 import { STAT_MAX, Stat, WEAPON_CHOICES } from '../../shared/stats.js';
 import { Mask } from './entities.js';
 import { randomName } from './names.js';
@@ -23,12 +23,31 @@ const BUILDS = [
 
 const Mode = Object.freeze({ WANDER: 0, FARM: 1, FIGHT: 2, FLEE: 3, LOOT: 4 });
 
+/** Draws a skill from BOT.skillTiers. */
+export function drawSkill(rng) {
+  let roll = rng();
+  for (const tier of BOT.skillTiers) {
+    if (roll < tier.share) return lerp(tier.skill[0], tier.skill[1], rng());
+    roll -= tier.share;
+  }
+  const top = BOT.skillTiers.at(-1).skill;
+  return lerp(top[0], top[1], rng());
+}
+
 export class BotBrain {
-  constructor(rng) {
+  /** `skill`: 0 = hopeless, 1 = sharp. */
+  constructor(rng, skill = drawSkill(rng)) {
     this.rng = rng;
-    this.skill = 0.25 + rng() * 0.65; // 0 = hopeless, 1 = sharp
-    this.aimJitter = (1 - this.skill) * 0.3;
-    this.reaction = Math.round((1 - this.skill) * 20); // ticks before firing at a new target
+    this.skill = skill;
+    // From skill 0.5 up these match the original bots; below it each one degrades.
+    const rookie = Math.max(0, 0.5 - skill); // 0 for skilled bots, up to 0.5
+    this.aimJitter = (1 - skill) * 0.3 + rookie * 0.35; // radians of aim wobble
+    this.reaction = Math.round((1 - skill) * 20 + rookie * 50); // ticks before firing at a new target
+    this.leadAccuracy = Math.min(1, 0.4 + skill * 1.2); // share of a moving target's motion they lead
+    this.aggroRange = Math.min(850, 450 + skill * 800); // how far away they pick fights with ships
+    this.burstTicks = Math.round(30 + skill * 60); // rookies fire in bursts...
+    this.pauseTicks = Math.round(rookie * 160); // ...with breathers between them
+    this.burstPhase = Math.floor(rng() * 1000);
     this.build = BUILDS[Math.floor(rng() * BUILDS.length)];
     this.mode = Mode.WANDER;
     this.target = null;
@@ -68,7 +87,7 @@ export class BotBrain {
       const dist = Math.hypot(wrapDelta(e.x - ship.x, WORLD_SIZE), wrapDelta(e.y - ship.y, WORLD_SIZE));
       switch (e.type) {
         case EntityType.SHIP:
-          if (e.invuln === 0 && dist < 850 && dist < enemyDist) {
+          if (e.invuln === 0 && !e.player.stealth && dist < this.aggroRange && dist < enemyDist) {
             enemy = e;
             enemyDist = dist;
           }
@@ -137,7 +156,7 @@ export class BotBrain {
     let buttons = Button.AIM;
     let aim = ship.angle;
     const t = this.target;
-    if (t && t.dead) {
+    if (t && (t.dead || (t.type === EntityType.SHIP && t.player.stealth))) {
       this.target = null;
       this.mode = Mode.WANDER;
     }
@@ -154,11 +173,12 @@ export class BotBrain {
           // Projectiles inherit our velocity, so lead the target's motion relative to us.
           const rvx = t.vx - ship.vx;
           const rvy = t.vy - ship.vy;
-          const time = interceptTime(dx, dy, rvx, rvy, ship.st.bulletSpeed);
-          aim = (time > 0 ? Math.atan2(dy + rvy * time, dx + rvx * time) : Math.atan2(dy, dx)) + this.noise;
+          const lead = Math.max(0, interceptTime(dx, dy, rvx, rvy, ship.st.bulletSpeed)) * this.leadAccuracy;
+          aim = Math.atan2(dy + rvy * lead, dx + rvx * lead) + this.noise;
           const range = (ship.st.bulletSpeed * ship.st.bulletLife) / TICK_RATE;
           const tolerance = 0.1 + t.radius / Math.max(dist, 1);
-          if (game.tick >= this.fireAfter && dist < range * 0.95 && Math.abs(angleDiff(aim, ship.angle)) < tolerance) {
+          const triggerReady = this.pauseTicks === 0 || (game.tick + this.burstPhase) % (this.burstTicks + this.pauseTicks) < this.burstTicks;
+          if (triggerReady && game.tick >= this.fireAfter && dist < range * 0.95 && Math.abs(angleDiff(aim, ship.angle)) < tolerance) {
             buttons |= Button.FIRE;
           }
           const preferred = this.mode === Mode.FIGHT ? 380 + (1 - this.skill) * 160 : 240 + t.radius;

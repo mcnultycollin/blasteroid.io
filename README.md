@@ -24,6 +24,7 @@ Requires Node.js 20 or newer. The only runtime dependency is
 | Upgrade a stat | `1`–`8` or click the panel | | tap the panel |
 | Choose a weapon (level 10) | `Z` `X` `C` or click | | tap a card |
 | Mute / netgraph | `M` / `F3` | | |
+| Hide from bots and aliens (testing) | `I` | | |
 
 - **Score** comes from asteroids (smaller is worth more), aliens, other
   pilots and the orbs they drop, plus a trickle for staying alive and active.
@@ -173,10 +174,18 @@ load balancer.
 | `MAX_CONNECTIONS_PER_IP` | `8` | Simultaneous sockets per address |
 | `TRUST_PROXY` | | `1` to take client IPs from `X-Forwarded-For` (only behind your own proxy) |
 | `ALLOWED_ORIGINS` | | Comma-separated WebSocket origins; empty allows any |
+| `DEV_TOOLS` | on unless `NODE_ENV=production` | Testing aids such as stealth (`I`); set `1` or `0` to force |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `silent` |
 
 Bots use the same input pipeline as humans and look like normal players, so
-small rooms stay lively. Set `BOTS=0` to turn them off.
+small rooms stay lively. Set `BOTS=0` to turn them off. Most are beatable
+rookies and a few are aces (`BOT.skillTiers` in `server/game/tuning.js`);
+rookies aim and lead worse, react slower, pick fewer fights and shoot in
+bursts.
+
+Stealth (`I`) hides you from bots and aliens so you can test things
+undisturbed. They stop targeting you, but stray shots and rocks can still hit.
+It's a development aid, so production servers ignore it unless `DEV_TOOLS=1`.
 
 ## Deploying
 

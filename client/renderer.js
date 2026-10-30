@@ -373,11 +373,13 @@ export class Renderer {
     const hue = world.playerHue(s.playerId);
     const color = mine ? '#ffffff' : playerColor(hue);
     const blink = s.flags & ShipFlag.INVULN && Math.floor(time * 8) % 2 === 0;
+    const stealth = (s.flags & ShipFlag.STEALTH) !== 0;
 
     ctx.save();
     ctx.translate(s.dx, s.dy);
     ctx.rotate(s.ra);
-    ctx.globalAlpha = blink ? 0.35 : 1;
+    ctx.globalAlpha = blink ? 0.35 : stealth ? 0.5 : 1;
+    if (stealth) ctx.setLineDash([5, 4]);
     if (s.flags & ShipFlag.THRUST) {
       const boost = (s.flags & ShipFlag.BOOST) !== 0;
       const len = (boost ? 2.2 : 1.5) + Math.random() * 0.4;
@@ -419,6 +421,7 @@ export class Renderer {
       ctx.lineWidth = s.weapon === Weapon.CANNON ? 4 : 2;
       ctx.stroke();
     }
+    ctx.setLineDash([]);
     ctx.restore();
 
     if (s.flags & ShipFlag.SHIELD) {

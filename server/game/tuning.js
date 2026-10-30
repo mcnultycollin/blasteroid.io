@@ -119,6 +119,14 @@ export const REWARD = Object.freeze({
 });
 
 export const BOT = Object.freeze({
+  // Skill mix: most bots are beatable rookies, a few aces play at full strength.
+  // Skill 0.5 and above plays exactly as before; below it, aim, leading,
+  // reactions, aggression and trigger discipline all get worse.
+  skillTiers: [
+    { share: 0.65, skill: [0.05, 0.35] }, // rookie
+    { share: 0.25, skill: [0.35, 0.65] }, // regular
+    { share: 0.1, skill: [0.65, 0.9] }, // ace
+  ],
   thinkInterval: 6,
   respawnDelay: [seconds(2), seconds(6)],
   manageEvery: seconds(1),

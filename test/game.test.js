@@ -20,6 +20,8 @@ import { randomName, sanitizeName } from '../server/game/names.js';
 import { findOpenSpot, spawnAsteroid, spawnPickup } from '../server/game/spawning.js';
 import { createPlanet } from '../shared/gravity.js';
 import { generatePlanets, spawnOrbiter } from '../server/game/planets.js';
+import { BotBrain, drawSkill } from '../server/game/bots.js';
+import { spawnAlien } from '../server/game/spawning.js';
 import { createRng } from '../shared/math.js';
 import { ASTEROID, MOTHERSHIP, PICKUP, PLANETS, REWARD, SHIP } from '../server/game/tuning.js';
 import { addShip, emptyGame, hold } from './helpers.js';
@@ -451,4 +453,89 @@ test('players, asteroids and aliens never spawn inside gravity wells', () => {
     const spot = findOpenSpot(game, 900, 24, true);
     assert.ok(Math.hypot(spot.x - planet.x, spot.y - planet.y) > planet.range, 'outside the well');
   }
+});
+
+/* Bot skill and stealth -------------------------------------------------------- */
+
+test('most bots are rookies, a few are aces', () => {
+  const rng = createRng(21);
+  const skills = Array.from({ length: 2000 }, () => drawSkill(rng));
+  const share = (f) => skills.filter(f).length / skills.length;
+  assert.ok(share((s) => s < 0.35) > 0.55, 'majority are rookies');
+  assert.ok(share((s) => s >= 0.65) > 0.05, 'some aces remain');
+});
+
+test('skilled bots keep the original behaviour; rookies are clearly worse', () => {
+  for (const skill of [0.5, 0.75, 0.9]) {
+    const b = new BotBrain(createRng(1), skill);
+    assert.ok(Math.abs(b.aimJitter - (1 - skill) * 0.3) < 1e-12);
+    assert.equal(b.reaction, Math.round((1 - skill) * 20));
+    assert.equal(b.leadAccuracy, 1);
+    assert.equal(b.aggroRange, 850);
+    assert.equal(b.pauseTicks, 0);
+  }
+  const rookie = new BotBrain(createRng(1), 0.1);
+  assert.ok(rookie.aimJitter > 0.35 && rookie.reaction > 30 && rookie.leadAccuracy < 0.6 && rookie.pauseTicks > 0);
+});
+
+function duel(skill, seed) {
+  const game = emptyGame(seed);
+  game.botTarget = 2; // one human + our one bot: nothing gets added or retired
+  const target = addShip(game, 'Target', 3000, 3000);
+  target.ship.hp = target.ship.maxHp = 1e9;
+  const bot = game.addPlayer('Bot', true);
+  bot.brain = new BotBrain(createRng(seed + 1), skill);
+  bot.wantsSpawn = true;
+  game.step();
+  Object.assign(bot.ship, { x: 2620, y: 3000, vx: 0, vy: 0, invuln: 0 });
+  let dealt = 0;
+  for (let t = 0; t < 30 * TICK_RATE; t++) {
+    game.queueInput(target.player, target.player.lastInputSeq + 1, Button.THRUST | Button.AIM, (t / TICK_RATE) * 1.2);
+    const before = target.ship.hp;
+    game.step();
+    dealt += Math.max(0, before - target.ship.hp);
+  }
+  return dealt;
+}
+
+test('a rookie deals far less damage than an ace against a moving target', () => {
+  const rookie = duel(0.15, 7) + duel(0.15, 8);
+  const ace = duel(0.85, 7) + duel(0.85, 8);
+  assert.ok(ace > 0);
+  assert.ok(rookie < ace * 0.45, `rookie ${Math.round(rookie)} vs ace ${Math.round(ace)}`);
+});
+
+test('stealth hides a player from bots', () => {
+  const game = emptyGame();
+  game.botTarget = 2;
+  const human = addShip(game, 'Tester', 3000, 3000);
+  human.ship.hp = human.ship.maxHp = 1e9;
+  const bot = game.addPlayer('Bot', true);
+  bot.brain = new BotBrain(createRng(4), 0.9);
+  bot.wantsSpawn = true;
+  game.step();
+  Object.assign(bot.ship, { x: 2700, y: 3000, invuln: 0 });
+
+  human.player.stealth = true;
+  for (let t = 0; t < 4 * TICK_RATE; t++) game.step();
+  assert.notEqual(bot.brain.target, human.ship, 'bot ignores a stealthed ship');
+  assert.ok(human.ship.flags & 128, 'the STEALTH flag reaches the client');
+
+  human.player.stealth = false;
+  Object.assign(bot.ship, { x: 2700, y: 3000 });
+  for (let t = 0; t < TICK_RATE; t++) game.step();
+  assert.equal(bot.brain.target, human.ship, 'visible again');
+});
+
+test('stealth hides a player from aliens', () => {
+  const game = emptyGame();
+  const human = addShip(game, 'Tester', 3000, 3000);
+  human.ship.hp = human.ship.maxHp = 1e9;
+  const saucer = spawnAlien(game, AlienKind.SAUCER, 3000, 2600);
+  human.player.stealth = true;
+  for (let t = 0; t < TICK_RATE; t++) game.step();
+  assert.equal(saucer.target, null);
+  human.player.stealth = false;
+  for (let t = 0; t < TICK_RATE; t++) game.step();
+  assert.equal(saucer.target, human.ship);
 });

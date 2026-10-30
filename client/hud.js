@@ -4,7 +4,7 @@
  * kill feed, announcements, damage direction and off-screen indicators.
  * Clickable areas are recorded while drawing and resolved by hitTest().
  */
-import { EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import { EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, ShipFlag, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
 import { gravityAt } from '../shared/gravity.js';
 import { TAU, clamp, wrapDelta } from '../shared/math.js';
 import { MAX_LEVEL, STAT_COUNT, STAT_INFO, STAT_MAX, WEAPONS, WEAPON_CHOICES, scoreForLevel } from '../shared/stats.js';
@@ -166,6 +166,11 @@ export class Hud {
     const alive = Math.max(0, Math.floor((v.serverTick - stats.spawnTick) / TICK_RATE));
     const time = `${Math.floor(alive / 60)}:${String(alive % 60).padStart(2, '0')}`;
     ctx.fillText(`RANK ${rank}   KILLS ${stats.kills}   TIME ${time}`, MARGIN, MARGIN + 44);
+    if (self.flags & ShipFlag.STEALTH) {
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.fillStyle = '#b48cff';
+      ctx.fillText('STEALTH: HIDDEN FROM BOTS  [I]', MARGIN, MARGIN + 62);
+    }
   }
 
   /**

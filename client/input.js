@@ -27,7 +27,7 @@ const STICK_BOOST = 85; // px: pushing the stick this far engages boost
 
 /**
  * `actions` callbacks: upgrade(stat), weapon(choiceIndex), respawn(),
- * toggleMute(), toggleDebug(), hudPress(x, y) -> true if the HUD consumed the press.
+ * toggleMute(), toggleStealth(), toggleDebug(), hudPress(x, y) -> true if the HUD consumed the press.
  */
 export class Input {
   constructor(canvas, actions) {
@@ -86,6 +86,8 @@ export class Input {
       this.actions.respawn();
     } else if (e.code === 'KeyM') {
       this.actions.toggleMute();
+    } else if (e.code === 'KeyI') {
+      this.actions.toggleStealth();
     } else if (e.code === 'F3' || e.code === 'Backquote') {
       e.preventDefault();
       this.actions.toggleDebug();

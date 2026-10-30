@@ -7,6 +7,7 @@ import {
   encodeInput,
   encodeJoin,
   encodePing,
+  encodeStealth,
   encodeUpgrade,
   encodeWeapon,
   readAnnounce,
@@ -86,6 +87,10 @@ export class Connection {
 
   chooseWeapon(weapon) {
     this.send(encodeWeapon(this.writer, weapon));
+  }
+
+  toggleStealth() {
+    this.send(encodeStealth(this.writer));
   }
 
   ping() {

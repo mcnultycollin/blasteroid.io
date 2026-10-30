@@ -20,7 +20,7 @@ import {
 import { TAU, clamp, normalizeAngle } from './math.js';
 import { STAT_COUNT } from './stats.js';
 
-export const ClientMsg = Object.freeze({ JOIN: 1, INPUT: 2, UPGRADE: 3, WEAPON: 4, PING: 5 });
+export const ClientMsg = Object.freeze({ JOIN: 1, INPUT: 2, UPGRADE: 3, WEAPON: 4, PING: 5, STEALTH: 6 });
 
 export const ServerMsg = Object.freeze({
   WELCOME: 1,
@@ -224,17 +224,22 @@ export function encodePing(w, time) {
   return w.reset().u8(ClientMsg.PING).u32(time).finish();
 }
 
+/** Toggles stealth (hidden from bots and aliens); servers only honour it with dev tools on. */
+export function encodeStealth(w) {
+  return w.reset().u8(ClientMsg.STEALTH).finish();
+}
+
 /* Server -> client: small messages ------------------------------------------ */
 
-/** Includes the room's planets; they never move, so clients learn them once. */
-export function encodeWelcome(w, tick, roomId, planets) {
-  w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(planets.length);
+/** Includes the room's planets (they never move, so clients learn them once) and Feature bits. */
+export function encodeWelcome(w, tick, roomId, planets, features) {
+  w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(features).u8(planets.length);
   for (const p of planets) w.f64(p.x).f64(p.y).f64(p.radius).f64(p.density).str(p.name);
   return w.finish();
 }
 
 export function readWelcome(r) {
-  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), planets: [] };
+  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), features: r.u8(), planets: [] };
   for (let n = r.u8(); n > 0; n--) {
     welcome.planets.push({ x: r.f64(), y: r.f64(), radius: r.f64(), density: r.f64(), name: r.str() });
   }

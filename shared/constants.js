@@ -46,6 +46,7 @@ export const ShipFlag = Object.freeze({
   BRAKE: 16,
   RAPID: 32,
   OVERDRIVE: 64,
+  STEALTH: 128, // hidden from bots and aliens (a development tool)
 });
 
 export const ASTEROID_RADIUS = [18, 36, 62]; // indexed by size class: small, medium, large
@@ -95,3 +96,5 @@ export const Announce = Object.freeze({
 export const KickReason = Object.freeze({ SERVER_FULL: 1, OUTDATED: 2, SHUTDOWN: 3, IDLE: 4, ABUSE: 5 });
 export const EventKind = Object.freeze({ SCORE: 1, HIT: 2, DAMAGE: 3 });
 export const MarkerKind = Object.freeze({ LEADER: 1, MOTHERSHIP: 2 });
+/** Optional server features, announced in the welcome message. */
+export const Feature = Object.freeze({ DEV_TOOLS: 1 });

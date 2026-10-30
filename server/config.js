@@ -15,6 +15,8 @@ export const config = Object.freeze({
   /** Bots fill each room up to this many players; 0 disables bots. */
   botTarget: int(env.BOTS, 10),
   maxConnectionsPerIp: int(env.MAX_CONNECTIONS_PER_IP, 8),
+  /** Testing aids such as stealth (press I). On by default except in production. */
+  devTools: env.DEV_TOOLS ? env.DEV_TOOLS === '1' || env.DEV_TOOLS === 'true' : env.NODE_ENV !== 'production',
   /** Honour X-Forwarded-For (only behind a proxy you control, e.g. a load balancer). */
   trustProxy: env.TRUST_PROXY === '1' || env.TRUST_PROXY === 'true',
   /** Comma-separated list of allowed WebSocket origins; empty allows any. */

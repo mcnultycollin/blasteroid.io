@@ -63,6 +63,7 @@ export class Player {
     this.wantsEvents = !isBot;
     this.brain = null; // BotBrain for bots
     this.retiring = false; // surplus bot waiting to leave unnoticed
+    this.stealth = false; // hidden from bots and aliens (dev tool)
     this.removed = false;
   }
 }
