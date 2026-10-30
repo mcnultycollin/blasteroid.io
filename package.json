@@ -1,22 +1,28 @@
 {
   "name": "blasteroid.io",
-  "version": "1.0.0",
-  "description": "//this is the readme file.",
-  "main": "server.js",
-  "dependencies": {
-    "express": "^4.16.4",
-    "socket.io": "^2.2.0"
+  "version": "0.2.0",
+  "description": "Retro multiplayer space shooter for the browser.",
+  "private": true,
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=20"
   },
-  "devDependencies": {},
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js",
+    "bench": "node scripts/bench.js",
+    "lag": "node scripts/lag-proxy.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mcnultycollin/blasteroid.io.git"
   },
-  "author": "",
+  "author": "Collin McNulty",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/mcnultycollin/blasteroid.io/issues"

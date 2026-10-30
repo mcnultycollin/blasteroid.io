@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Blasteroid.io</title>
+    <meta name="description" content="Retro multiplayer space shooter. Blast asteroids, outgun other pilots and survive the aliens." />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="/static/img/ship.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/game.css" />
+    <link rel="modulepreload" href="/client/main.js" />
+    <link rel="modulepreload" href="/client/net.js" />
+    <link rel="modulepreload" href="/client/world.js" />
+    <link rel="modulepreload" href="/client/prediction.js" />
+    <link rel="modulepreload" href="/client/renderer.js" />
+    <link rel="modulepreload" href="/client/hud.js" />
+    <link rel="modulepreload" href="/client/effects.js" />
+    <link rel="modulepreload" href="/client/audio.js" />
+    <link rel="modulepreload" href="/client/input.js" />
+    <link rel="modulepreload" href="/client/ui.js" />
+    <link rel="modulepreload" href="/shared/constants.js" />
+    <link rel="modulepreload" href="/shared/math.js" />
+    <link rel="modulepreload" href="/shared/stats.js" />
+    <link rel="modulepreload" href="/shared/physics.js" />
+    <link rel="modulepreload" href="/shared/protocol.js" />
+  </head>
+  <body>
+    <canvas id="game" aria-label="Blasteroid.io game"></canvas>
+
+    <div id="menu" class="overlay">
+      <div class="panel">
+        <h1>BLASTEROID<span>.IO</span></h1>
+        <p class="tagline">Blast rocks. Outgun pilots. Survive the saucers.</p>
+        <form id="join-form" autocomplete="off">
+          <input id="name" maxlength="16" placeholder="Pilot name" spellcheck="false" aria-label="Pilot name" />
+          <button id="play" type="submit">PLAY</button>
+        </form>
+        <p id="status" class="status" aria-live="polite">Connecting…</p>
+        <div class="controls">
+          <div><kbd>Mouse</kbd> aim &nbsp; <kbd>Click</kbd> / <kbd>Space</kbd> fire</div>
+          <div><kbd>W</kbd> / <kbd>Right click</kbd> thrust &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>Shift</kbd> boost</div>
+          <div><kbd>A</kbd> <kbd>D</kbd> rotate (classic) &nbsp; <kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
+          <div class="touch-hint">Touch: drag left side to steer, hold right side to fire</div>
+        </div>
+        <p class="footer"><a href="/">About Blasteroid.io</a></p>
+      </div>
+    </div>
+
+    <div id="death" class="overlay hidden">
+      <div class="panel">
+        <h2 id="death-title">DESTROYED</h2>
+        <p id="death-cause" class="tagline"></p>
+        <div id="death-stats" class="stats"></div>
+        <button id="again" type="button">FLY AGAIN</button>
+        <p class="status">or press <kbd>Enter</kbd></p>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+
+    <script type="module" src="/client/main.js"></script>
+  </body>
+</html>
