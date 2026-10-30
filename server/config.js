@@ -7,7 +7,7 @@ function int(value, fallback) {
 }
 
 export const config = Object.freeze({
-  port: int(env.PORT, 5000),
+  port: int(env.PORT, 3000), // not 5000: macOS reserves it for AirPlay Receiver
   host: env.HOST || '0.0.0.0',
   production: env.NODE_ENV === 'production',
   /** Human players (and spectators) per room before a new room opens. */

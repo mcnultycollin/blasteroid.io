@@ -4,15 +4,15 @@
  * be felt before players feel them. Delays every chunk of TCP data in both
  * directions while preserving byte order, exactly like a slow real link.
  *
- *   npm start                        # game server on :5000
- *   npm run lag -- 80 20             # proxy :5001 -> :5000, 80 ms each way + up to 20 ms jitter
- *   open http://localhost:5001/play  # press F3 in game for the netgraph
+ *   npm start                        # game server on :3000
+ *   npm run lag -- 80 20             # proxy :3001 -> :3000, 80 ms each way + up to 20 ms jitter
+ *   open http://localhost:3001/play  # press F3 in game for the netgraph
  *
- * Arguments: [oneWayMs=60] [jitterMs=15] [listenPort=5001] [targetPort=5000]
+ * Arguments: [oneWayMs=60] [jitterMs=15] [listenPort=3001] [targetPort=3000]
  */
 import net from 'node:net';
 
-const [oneWay = 60, jitter = 15, listenPort = 5001, targetPort = 5000] = process.argv.slice(2).map(Number);
+const [oneWay = 60, jitter = 15, listenPort = 3001, targetPort = 3000] = process.argv.slice(2).map(Number);
 
 /** Forwards `from` to `to` with delay; one FIFO and one timer per direction so data is never reordered. */
 function delayedPipe(from, to) {

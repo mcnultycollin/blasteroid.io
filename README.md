@@ -6,7 +6,7 @@ endless play, and a ship that grows stronger the longer you survive.
 
 ```sh
 npm install
-npm start            # http://localhost:5000/play
+npm start            # http://localhost:3000/play
 ```
 
 Requires Node.js 20 or newer. The only runtime dependency is
@@ -45,7 +45,7 @@ Requires Node.js 20 or newer. The only runtime dependency is
 npm run dev               # restart the server on file changes
 npm test                  # unit + integration tests (node:test)
 npm run bench -- 60       # server cost per tick and snapshot size for 60 players
-npm run lag -- 80 20      # play through 80 ms each way + 20 ms jitter at :5001/play
+npm run lag -- 80 20      # play through 80 ms each way + 20 ms jitter at :3001/play
 ```
 
 There is no build step: the browser loads the ES modules in `client/` and
@@ -129,7 +129,7 @@ load balancer.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PORT` | `5000` | HTTP/WebSocket port |
+| `PORT` | `3000` | HTTP/WebSocket port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `NODE_ENV` | | `production` serves assets from memory with brotli/gzip and ETags |
 | `MAX_PLAYERS` | `40` | Humans per room before another room opens |
