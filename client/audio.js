@@ -176,6 +176,35 @@ export class Sound {
     [523, 659, 784, 1046].forEach((f, i) => this.tone(out, 'square', f, f, 0.1, i * 0.07));
   }
 
+  /** The kinetic blast: a deep whump with a rushing tail. */
+  blast(x, y, mine) {
+    const out = this.output(mine ? 'blast-own' : 'blast', 80, mine ? undefined : x, y, mine ? 0.32 : 0.22);
+    if (!out) return;
+    this.tone(out, 'sine', 160, 38, 0.32);
+    this.burst(out, 0.28, 3200, 180);
+  }
+
+  /** Orbit lock engaged (rising) or released (falling). */
+  lock(on) {
+    const out = this.output('lock', 120, undefined, undefined, 0.12);
+    if (!out) return;
+    const [a, b] = on ? [660, 990] : [880, 440];
+    this.tone(out, 'triangle', a, a, 0.07);
+    this.tone(out, 'triangle', b, b, 0.12, 0.07);
+  }
+
+  /** A lock or ability that is not available right now. */
+  denied() {
+    const out = this.output('denied', 200, undefined, undefined, 0.1);
+    if (out) this.tone(out, 'square', 180, 140, 0.12);
+  }
+
+  /** Hull sizzling against the star. */
+  sizzle() {
+    const out = this.output('sizzle', 110, undefined, undefined, 0.16);
+    if (out) this.burst(out, 0.1, 7000, 2500, 'highpass');
+  }
+
   alarm() {
     const out = this.output('alarm', 2000, undefined, undefined, 0.18);
     if (!out) return;

@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   AlienKind,
+  BUTTON_MASK,
+  BodyKind,
   BulletKind,
+  Button,
   EntityType,
   EventKind,
+  FxKind,
   MarkerKind,
   PickupKind,
   RemoveReason,
@@ -19,6 +23,7 @@ import {
   dqAngle,
   dqPos,
   dqVel,
+  encodeInput,
   encodeLeaderboard,
   encodeRoster,
   encodeWelcome,
@@ -85,7 +90,8 @@ test('roster and leaderboard round-trip', () => {
 test('snapshot round-trips every section and entity type', () => {
   const ship = {
     id: 11, type: EntityType.SHIP, playerId: 4, x: 100.25, y: 6000.5, vx: -50.75, vy: 20, angle: 1.25,
-    hp: 73.4, maxHp: 130, shield: 12.2, energy: 480, cooldown: 3, boostLock: 1, flags: 9,
+    hp: 73.4, maxHp: 130, shield: 12.2, energy: 480, cooldown: 3, boostLock: 1, blastCooldown: 40, flags: 9 | 256,
+    lockBody: 1, lockRadius: 287.25, lockPhase: -2.5, lockEpoch: 123456, lockOmega: 0.41, lockDir: -1,
     score: 1234, kills: 2, level: 6, points: 1, statLevels: Uint8Array.from([1, 0, 2, 0, 3, 0, 0, 1]),
     weapon: 2, weaponChoice: true, powerups: Uint16Array.from([100, 0, 50]), spawnTick: 77,
   };
@@ -103,9 +109,15 @@ test('snapshot round-trips every section and entity type', () => {
     { kind: EventKind.DAMAGE, amount: 8, angle: 2 },
   ];
 
+  const effects = [
+    { kind: FxKind.BLAST, x: 300, y: 400, angle: 1.5, sourceId: 12 },
+    { kind: FxKind.BLAST, x: 300, y: 400, angle: 0, sourceId: 11 }, // the viewer's own: skipped
+    { kind: FxKind.BLAST, x: 4000, y: 4000, angle: 0, sourceId: 13 }, // out of view: skipped
+  ];
+
   const out = new SnapshotWriter(new BinaryWriter(16));
   out.begin(1000, 1 | 2);
-  out.self(ship, 555);
+  out.self(ship, 555, -77);
   out.stats(ship);
   out.beginList();
   out.removal(30, RemoveReason.DESTROYED, NO_ID);
@@ -115,9 +127,10 @@ test('snapshot round-trips every section and entity type', () => {
   for (const e of entities) out.entity(e, 11, 1000);
   out.endList();
   out.events(events);
+  out.effects(effects, 11, 300, 600, 1100, 700); // viewer ship 11, camera at (300, 600)
   const bytes = out.finish();
 
-  const got = { removals: [], entities: [], events: [] };
+  const got = { removals: [], entities: [], events: [], effects: [] };
   const r = new BinaryReader(bytes);
   assert.equal(r.u8(), ServerMsg.SNAPSHOT);
   readSnapshot(r, {
@@ -128,6 +141,7 @@ test('snapshot round-trips every section and entity type', () => {
     remove: (id, reason, collector) => got.removals.push([id, reason, collector]),
     entity: (type, id, reader) => got.entities.push({ type, id, ...readEntity(type, reader, {}) }),
     event: (ev) => got.events.push(ev),
+    effect: (kind, x, y, angle, sourceId) => got.effects.push({ kind, x, y, angle, sourceId }),
     end: () => (got.ended = true),
   });
   assert.equal(r.remaining, 0, 'decoder consumed exactly what the encoder wrote');
@@ -137,6 +151,16 @@ test('snapshot round-trips every section and entity type', () => {
   assert.equal(got.self.vx, -50.75);
   assert.equal(got.self.hp, 74);
   assert.equal(got.self.boostLock, 1);
+  assert.equal(got.self.blastCooldown, 40);
+  assert.equal(got.self.flags, 9 | 256, 'flags take 16 bits');
+  assert.equal(got.self.timeOffset, -77);
+  assert.deepEqual(
+    [got.self.lockBody, got.self.lockRadius, got.self.lockPhase, got.self.lockEpoch, got.self.lockOmega, got.self.lockDir],
+    [1, 287.25, -2.5, 123456, 0.41, -1],
+  );
+  assert.equal(got.effects.length, 1);
+  assert.equal(got.effects[0].sourceId, 12);
+  assert.ok(Math.abs(got.effects[0].angle - 1.5) < 1e-3);
   assert.deepEqual(got.stats.statLevels, [1, 0, 2, 0, 3, 0, 0, 1]);
   assert.deepEqual(got.stats.powerups, [100, 0, 50]);
   assert.equal(got.stats.weaponChoice, true);
@@ -163,14 +187,27 @@ test('snapshot round-trips every section and entity type', () => {
   assert.ok(got.ended);
 });
 
-test('welcome carries the planets at full precision', () => {
-  const planets = [{ x: 1234.5, y: 99.25, radius: 151, density: 1.33, name: 'Orin II' }];
-  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, planets, 1));
+test('welcome carries the star and planets with their orbits at full precision', () => {
+  const bodies = [
+    { kind: BodyKind.STAR, radius: 200, density: 0.64, name: 'Sol', orbit: { cx: 4096, cy: 4096, radius: 0, phase: 0, omega: 0 } },
+    { kind: BodyKind.ROCK, radius: 151, density: 1.33, name: 'Orin II', orbit: { cx: 4096, cy: 4096, radius: 1966, phase: 2.25, omega: 0.000402 } },
+  ];
+  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, bodies, 1));
   assert.equal(r.u8(), ServerMsg.WELCOME);
   const w = readWelcome(r);
   assert.equal(w.tick, 77);
   assert.equal(w.features, 1);
-  assert.deepEqual(w.planets, planets);
+  assert.deepEqual(w.bodies, bodies);
+});
+
+test('input commands carry 16 button bits', () => {
+  const buttons = Button.BLAST | Button.LOCK | Button.STRAFE_RIGHT | Button.FIRE;
+  const r = new BinaryReader(encodeInput(new BinaryWriter(), 4242, buttons, qAngle(1)));
+  r.u8();
+  assert.equal(r.u32(), 4242);
+  assert.equal(r.u8(), 1);
+  assert.equal(r.u16() & BUTTON_MASK, buttons);
+  assert.equal(r.u16(), qAngle(1));
 });
 
 test('asteroid records carry orbits exactly, or positions for free and falling rocks', () => {
@@ -186,11 +223,12 @@ test('asteroid records carry orbits exactly, or positions for free and falling r
   out.entity(falling, NO_ID, 1);
   out.endList();
   out.events([]);
+  out.effects([], NO_ID, 0, 0, 0, 0);
   const records = [];
   const r = new BinaryReader(out.finish());
   r.u8();
   readSnapshot(r, {
-    begin() {}, self() {}, stats() {}, spectate() {}, remove() {}, event() {}, end() {},
+    begin() {}, self() {}, stats() {}, spectate() {}, remove() {}, event() {}, effect() {}, end() {},
     entity: (type, id, reader) => records.push(readEntity(type, reader, {})),
   });
   assert.deepEqual(records[0].orbit, { planet: 2, radius: 287, phase, epoch: 4000000, dir: -1, omega: 0 });

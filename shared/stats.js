@@ -3,7 +3,7 @@
  * client can predict its own ship with exactly the numbers the server uses
  * and display upgrade information without extra traffic.
  */
-import { TICK_DT, TICK_RATE } from './constants.js';
+import { SHIP_RADIUS, TICK_RATE } from './constants.js';
 import { clamp } from './math.js';
 
 export const Stat = Object.freeze({
@@ -97,9 +97,12 @@ export const WEAPONS = Object.freeze([
 const BASE = Object.freeze({
   hp: 100,
   regen: 2, // hp per second, after a delay without damage
-  thrust: 560, // units/s^2
-  drag: 1.2, // per second; terminal speed = thrust / drag
-  brakeDrag: 4,
+  thrust: 560, // units/s^2 (main engine)
+  maxSpeed: 480, // thrusters cannot push past this; gravity and boost can
+  boostSpeed: 1.7, // × maxSpeed while boosting
+  backThrust: 0.6, // reverse thruster, × thrust
+  strafeThrust: 0.75, // lateral thrusters, × thrust
+  brake: 0.9, // retro-brake deceleration, × thrust
   turnRate: 4.4, // rad/s
   damage: 12,
   bulletSpeed: 860,
@@ -108,6 +111,9 @@ const BASE = Object.freeze({
   energyMax: 600, // integer energy keeps boost prediction exact
   energyRegen: 4, // per tick
   boostDrain: 10, // per tick
+  blastCost: 160, // energy per kinetic blast
+  blastInterval: 72, // ticks between blasts
+  blastRecoil: 70, // units/s the blaster is pushed back
 });
 
 /**
@@ -119,10 +125,14 @@ export function deriveStats(levels, weapon, rapid, overdrive, out = {}) {
   const w = WEAPONS[weapon] ?? WEAPONS[0];
   out.maxHp = BASE.hp + 30 * levels[Stat.HULL];
   out.regen = BASE.regen + 1.5 * levels[Stat.REPAIR];
+  out.radius = SHIP_RADIUS;
   out.thrust = BASE.thrust * (1 + 0.06 * levels[Stat.ENGINE]);
   out.boostAccel = out.thrust * (overdrive ? 2.3 : 1.9);
-  out.dragFactor = Math.exp(-BASE.drag * TICK_DT);
-  out.brakeFactor = Math.exp(-BASE.brakeDrag * TICK_DT);
+  out.maxSpeed = BASE.maxSpeed * (1 + 0.06 * levels[Stat.ENGINE]);
+  out.boostSpeed = out.maxSpeed * BASE.boostSpeed * (overdrive ? 1.15 : 1);
+  out.backThrust = BASE.backThrust;
+  out.strafeThrust = BASE.strafeThrust;
+  out.brakeAccel = out.thrust * BASE.brake;
   out.turnRate = BASE.turnRate * (1 + 0.08 * levels[Stat.HANDLING]);
   out.damage = BASE.damage * (1 + 0.14 * levels[Stat.DAMAGE]) * w.damage;
   out.bulletSpeed = BASE.bulletSpeed * (1 + 0.06 * levels[Stat.VELOCITY]) * w.speed;
@@ -137,5 +147,8 @@ export function deriveStats(levels, weapon, rapid, overdrive, out = {}) {
   out.energyRegen = BASE.energyRegen + (levels[Stat.ENERGY] >> 1);
   out.boostDrain = overdrive ? 0 : BASE.boostDrain;
   out.boostUnlock = out.energyMax >> 2; // after running dry, boost unlocks again at 25%
+  out.blastCost = BASE.blastCost;
+  out.blastInterval = BASE.blastInterval;
+  out.blastRecoil = BASE.blastRecoil;
   return out;
 }

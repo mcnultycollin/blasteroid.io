@@ -1,14 +1,16 @@
 /**
  * Heads-up display drawn on the game canvas in screen space: hull/energy/XP
- * bars, upgrade panel, weapon choice, power-up timers, leaderboard, minimap,
- * kill feed, announcements, damage direction and off-screen indicators.
- * Clickable areas are recorded while drawing and resolved by hitTest().
+ * bars, blast gauge, orbit readout, upgrade panel, weapon choice, power-up
+ * timers, leaderboard, minimap, kill feed, announcements and notices, damage
+ * direction, off-screen indicators and touch buttons. Clickable areas are
+ * recorded while drawing and resolved by hitTest().
  */
-import { EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, ShipFlag, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import { BodyKind, EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, ShipFlag, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
 import { gravityAt } from '../shared/gravity.js';
 import { TAU, clamp, wrapDelta } from '../shared/math.js';
 import { MAX_LEVEL, STAT_COUNT, STAT_INFO, STAT_MAX, WEAPONS, WEAPON_CHOICES, scoreForLevel } from '../shared/stats.js';
-import { playerColor } from './renderer.js';
+import { Flight } from './flightpath.js';
+import { FLIGHT_COLORS, playerColor } from './renderer.js';
 
 const FONT = 'ui-monospace, Menlo, Consolas, monospace';
 const MARGIN = 16;
@@ -18,6 +20,9 @@ const POWERUP_UI = [
   { label: 'OVERDRIVE', color: '#ff5cf2' },
 ];
 const WEAPON_KEYS = ['Z', 'X', 'C'];
+const NOTICE_MS = 1800;
+const TOUCH_BLAST = { r: 36 }; // on-screen buttons for touch play
+const TOUCH_SMALL = { r: 28 };
 
 function formatScore(n) {
   return n >= 100000 ? `${(n / 1000).toFixed(0)}k` : n.toLocaleString('en-US');
@@ -33,7 +38,8 @@ export class Hud {
     this.uiScale = 1;
     this.upgradePanelTop = 0;
     this.pull = { x: 0, y: 0 };
-    this.gravity = null; // { name, ratio, color } while inside a gravity well
+    this.pullRatio = 0; // gravity at the ship relative to its thrust
+    this.notices = []; // { text, color, time }: small, short-lived messages above the status bars
   }
 
   /* Feeds --------------------------------------------------------------------- */
@@ -49,12 +55,23 @@ export class Hud {
     if (this.announcements.length > 3) this.announcements.shift();
   }
 
+  /** A small transient message (orbit lock feedback and the like), less loud than announce(). */
+  notice(text, color, now) {
+    this.notices = this.notices.filter((n) => n.text !== text);
+    this.notices.push({ text, color, time: now });
+    if (this.notices.length > 2) this.notices.shift();
+  }
+
   addDamage(angle, now) {
     this.damageMarks.push({ angle, time: now });
     if (this.damageMarks.length > 8) this.damageMarks.shift();
   }
 
-  /** Returns the action under a screen point: { type: 'upgrade', stat } | { type: 'weapon', weapon } | null. */
+  /**
+   * Returns the action under a screen point: { type: 'upgrade', stat } |
+   * { type: 'weapon', weapon } | { type: 'blast' } | { type: 'lock' } |
+   * { type: 'brake' } | null.
+   */
   hitTest(x, y) {
     for (const area of this.hitAreas) {
       if (x >= area.x && x <= area.x + area.w && y >= area.y && y <= area.y + area.h) return area.action;
@@ -72,7 +89,8 @@ export class Hud {
   /**
    * `v` carries: ctx, width, height, dpr, now (ms), playing, self (hp, shield,
    * energy, flags), stats, st (derived stats), world, myPlayerId, camX, camY,
-   * scale, ping, fps, serverTick, touchStick, shipScreen, debug.
+   * scale, ping, fps, serverTick, touch, touchStick, shipScreen, planets,
+   * flight (FlightPath or null), blastReady, blastCharge, debug.
    */
   draw(v) {
     const { ctx, dpr } = v;
@@ -82,7 +100,7 @@ export class Hud {
     const W = v.width / s;
     const H = v.height / s;
 
-    this.gravity = null;
+    this.pullRatio = 0;
     if (v.playing) {
       this.drawOffscreenMarkers(v);
       this.drawDamageMarks(v);
@@ -97,7 +115,10 @@ export class Hud {
       this.drawUpgrades(ctx, v, W, H);
       this.drawWeaponChoice(ctx, v, W, H);
       this.drawPowerups(ctx, v, W, H);
-      this.drawGravityLabel(ctx, W, H);
+      this.drawBlastGauge(ctx, v, W, H);
+      this.drawOrbitReadout(ctx, v, W, H);
+      this.drawNotices(ctx, v, W, H);
+      if (v.touch) this.drawTouchButtons(ctx, v, W, H);
     }
     this.drawLeaderboard(ctx, v, W);
     this.drawMinimap(ctx, v, W, H);
@@ -318,14 +339,24 @@ export class Hud {
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+    // The solar system: planetary orbits, then each body and the edge of its well
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
     for (const p of v.planets ?? []) {
+      if (p.orbit.radius === 0) continue;
+      ctx.beginPath();
+      ctx.arc(x + p.orbit.cx * k, y + p.orbit.cy * k, p.orbit.radius * k, 0, TAU);
+      ctx.stroke();
+    }
+    for (const p of v.planets ?? []) {
+      const star = p.kind === BodyKind.STAR;
+      const hue = p.art?.hue ?? 220;
       ctx.beginPath();
       ctx.arc(x + p.x * k, y + p.y * k, Math.max(2.5, p.radius * k), 0, TAU);
-      ctx.fillStyle = 'rgba(170,185,255,0.55)';
+      ctx.fillStyle = star ? '#ffd166' : `hsla(${hue} 70% 65% / 0.7)`;
       ctx.fill();
       ctx.beginPath();
       ctx.arc(x + p.x * k, y + p.y * k, p.range * k, 0, TAU);
-      ctx.strokeStyle = 'rgba(140,170,255,0.2)';
+      ctx.strokeStyle = star ? 'rgba(255,209,102,0.25)' : `hsla(${hue} 70% 65% / 0.22)`;
       ctx.stroke();
     }
     // Visible area, wrapped around the torus and clipped to the map
@@ -421,8 +452,8 @@ export class Hud {
     const planet = gravityAt(v.shipX, v.shipY, v.planets, this.pull);
     if (!planet) return;
     const ratio = Math.hypot(this.pull.x, this.pull.y) / v.st.thrust;
+    this.pullRatio = ratio;
     const color = ratio < 0.5 ? '#7dff6a' : ratio < 0.85 ? '#ffd166' : '#ff4d4d';
-    this.gravity = { name: planet.name, ratio, color };
     const { ctx, dpr } = v;
     const angle = Math.atan2(this.pull.y, this.pull.x);
     const size = 5 + Math.min(ratio, 1.2) * 9;
@@ -443,14 +474,134 @@ export class Hud {
     ctx.restore();
   }
 
-  drawGravityLabel(ctx, W, H) {
-    const g = this.gravity;
-    if (!g) return;
+  /**
+   * Orbit readout above the status bars while inside a gravity well: what the
+   * current path leads to (stable orbit, descent, crash, escape, landed or
+   * locked), altitude, periapsis and apoapsis, the pull versus our thrust,
+   * and the lock hint.
+   */
+  drawOrbitReadout(ctx, v, W, H) {
+    const f = v.flight;
+    if (!f || !f.body || f.state === Flight.FREE) return;
+    const star = f.body.kind === BodyKind.STAR;
+    const name = f.body.name.toUpperCase();
+    const seconds = (t) => (t < 10 ? t.toFixed(1) : Math.round(t));
+    let title;
+    switch (f.state) {
+      case Flight.LOCKED:
+        title = `ORBIT LOCKED · ${name}`;
+        break;
+      case Flight.LANDED:
+        title = `LANDED · ${name}`;
+        break;
+      case Flight.IMPACT:
+        title = star ? `BURN-UP IN ${seconds(f.contactSeconds)}s · ${name}` : `CRASH IN ${seconds(f.contactSeconds)}s · ${name}`;
+        break;
+      case Flight.DESCENT:
+        title = f.contact ? `TOUCHDOWN IN ${seconds(f.contactSeconds)}s · ${name}` : `DESCENDING · ${name}`;
+        break;
+      case Flight.ESCAPE:
+        title = `ESCAPING ${name}`;
+        break;
+      default:
+        title = `STABLE ORBIT · ${name}`;
+    }
     const barW = Math.min(440, W - 2 * MARGIN);
-    ctx.font = `bold 11px ${FONT}`;
+    const right = (W + barW) / 2;
+    const y = H - MARGIN - 52 - 30;
+    const alarm = f.state === Flight.IMPACT;
     ctx.textAlign = 'right';
-    ctx.fillStyle = g.color;
-    ctx.fillText(`${g.name.toUpperCase()} GRAVITY  ${Math.round(g.ratio * 100)}% OF THRUST`, (W + barW) / 2, H - MARGIN - 52 - 14);
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillStyle = FLIGHT_COLORS[f.state];
+    ctx.globalAlpha = alarm ? 0.65 + 0.35 * Math.sin(v.now / 70) : 1;
+    ctx.fillText(title, right, y);
+    ctx.globalAlpha = 1;
+    const o = f.orbit;
+    const alt = (r) => Math.max(0, Math.round(r - f.body.radius));
+    const parts = [`ALT ${Math.round(f.altitude)}`];
+    if (f.state === Flight.STABLE || f.state === Flight.LOCKED) parts.push(`PE ${alt(o.periapsis)}  AP ${alt(o.apoapsis)}`);
+    parts.push(`PULL ${Math.round(this.pullRatio * 100)}%`);
+    if (!v.touch) parts.push(f.state === Flight.LOCKED ? '[L] RELEASE' : '[L] LOCK ORBIT');
+    ctx.font = `11px ${FONT}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(parts.join('   '), right, y + 15);
+  }
+
+  /** The kinetic blast's readiness: a ring that fills as it recharges, beside the status bars. */
+  drawBlastGauge(ctx, v, W, H) {
+    if (v.touch) return; // the touch BLAST button shows the same gauge
+    const barW = Math.min(440, W - 2 * MARGIN);
+    const x = (W + barW) / 2 + 26;
+    const y = H - MARGIN - 52 + 12;
+    this.drawGauge(ctx, x, y, 15, v.blastCharge, v.blastReady, 'P');
+  }
+
+  drawGauge(ctx, x, y, r, charge, ready, label) {
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    ctx.stroke();
+    ctx.strokeStyle = ready ? '#5cf2ff' : 'rgba(92,242,255,0.45)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(charge, 0, 1));
+    ctx.stroke();
+    ctx.font = `bold ${Math.round(Math.min(r * 0.75, (r * 1.5) / (label.length * 0.6)))}px ${FONT}`; // fits inside the ring
+    ctx.textAlign = 'center';
+    ctx.fillStyle = ready ? '#5cf2ff' : 'rgba(255,255,255,0.4)';
+    ctx.fillText(label, x, y + r * 0.27);
+  }
+
+  drawNotices(ctx, v, W, H) {
+    const now = v.now;
+    this.notices = this.notices.filter((n) => now - n.time < NOTICE_MS);
+    let y = H * 0.66;
+    ctx.textAlign = 'center';
+    ctx.font = `bold 14px ${FONT}`;
+    for (const n of this.notices) {
+      const age = now - n.time;
+      ctx.globalAlpha = clamp(Math.min(age / 100, (NOTICE_MS - age) / 400), 0, 1);
+      ctx.fillStyle = n.color;
+      ctx.fillText(n.text, W / 2, y);
+      y += 20;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** On-screen BLAST, LOCK and BRAKE buttons for touch play, stacked left of the minimap. */
+  drawTouchButtons(ctx, v, W, H) {
+    const x = W - MARGIN - 150 - 24 - TOUCH_BLAST.r;
+    let y = H - MARGIN - TOUCH_BLAST.r - 6;
+    ctx.fillStyle = 'rgba(92,242,255,0.08)';
+    ctx.beginPath();
+    ctx.arc(x, y, TOUCH_BLAST.r, 0, TAU);
+    ctx.fill();
+    this.drawGauge(ctx, x, y, TOUCH_BLAST.r, v.blastCharge, v.blastReady, 'BLAST');
+    this.addHitArea(x - TOUCH_BLAST.r, y - TOUCH_BLAST.r, TOUCH_BLAST.r * 2, TOUCH_BLAST.r * 2, { type: 'blast' });
+
+    const locked = v.flight?.state === Flight.LOCKED;
+    const inWell = v.flight !== null && v.flight.body !== null;
+    y -= TOUCH_BLAST.r + 16 + TOUCH_SMALL.r;
+    const lockColor = locked ? '#5cf2ff' : inWell ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.25)';
+    this.drawTouchButton(ctx, x, y, locked ? 'UNLOCK' : 'LOCK', lockColor, locked, { type: 'lock' });
+    y -= TOUCH_SMALL.r * 2 + 16;
+    this.drawTouchButton(ctx, x, y, 'BRAKE', 'rgba(255,255,255,0.75)', false, { type: 'brake' });
+  }
+
+  drawTouchButton(ctx, x, y, label, color, active, action) {
+    const r = TOUCH_SMALL.r;
+    ctx.fillStyle = active ? 'rgba(92,242,255,0.25)' : 'rgba(255,255,255,0.06)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = color;
+    ctx.fillText(label, x, y + 4);
+    this.addHitArea(x - r, y - r, r * 2, r * 2, action);
   }
 
   /** Netcode diagnostics (toggle with F3). */

@@ -9,15 +9,21 @@
 import {
   AlienKind,
   Announce,
+  BLAST_HALF_ANGLE,
+  BLAST_RANGE,
+  BodyKind,
   BulletKind,
+  Button,
   EntityType,
   EventKind,
   Feature,
+  FxKind,
   KickReason,
   KillCause,
   PROTOCOL_VERSION,
   PickupKind,
   RemoveReason,
+  SHIP_NOSE,
   SHIP_RADIUS,
   ShipFlag,
   TICK_MS,
@@ -31,6 +37,7 @@ import { NO_ID, dqAngle, qAngle } from '../shared/protocol.js';
 import { WEAPON_CHOICES, Weapon, viewScaleForLevel } from '../shared/stats.js';
 import { Sound } from './audio.js';
 import { Color, Effects, hueColor } from './effects.js';
+import { FlightPath } from './flightpath.js';
 import { Hud } from './hud.js';
 import { Input } from './input.js';
 import { Connection } from './net.js';
@@ -78,9 +85,11 @@ class GameClient {
     this.cam = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, leadX: 0, leadY: 0 };
     this.selfView = {
       rx: 0, ry: 0, ra: 0, dx: 0, dy: 0, flags: 0, hpFrac: 1,
-      playerId: NO_ID, level: 1, weapon: Weapon.BLASTER, hitFlash: 0,
+      playerId: NO_ID, level: 1, weapon: Weapon.BLASTER, hitFlash: 0, thrusters: 0,
     };
     this.shipScreen = { x: innerWidth / 2, y: innerHeight / 2 };
+    this.flight = new FlightPath();
+    this.lockView = { body: null, radius: 0, dir: 1 };
     this.shots = [];
     this.acc = 0;
     this.last = performance.now();
@@ -133,8 +142,8 @@ class GameClient {
         if (w.version !== PROTOCOL_VERSION) this.ui.showToast(KICK_MESSAGES[KickReason.OUTDATED]);
         this.devTools = (w.features & Feature.DEV_TOOLS) !== 0;
         this.ui.setDevTools(this.devTools);
-        this.world.setPlanets(w.planets);
-        this.predictor.planets = this.world.planets;
+        this.world.setBodies(w.bodies);
+        this.predictor.bodies = this.world.planets;
       },
       joined: (id) => {
         this.myPlayerId = id;
@@ -178,13 +187,20 @@ class GameClient {
       damaged: () => {},
       predictedImpact: (x, y) => this.effects.spark(x, y, Color.ORANGE),
       event: (ev) => this.onEvent(ev),
+      effect: (kind, x, y, angle) => {
+        if (kind === FxKind.BLAST) {
+          this.effects.blast(x + Math.cos(angle) * SHIP_NOSE, y + Math.sin(angle) * SHIP_NOSE, angle, BLAST_RANGE, BLAST_HALF_ANGLE);
+          this.sound.blast(x, y, false);
+        }
+      },
     };
   }
 
   onSelf(s, tick) {
     const p = this.predictor;
     if (!p.active) {
-      p.start(s);
+      // Our first command reaches the server about one round trip after this snapshot left it.
+      p.start(s, tick + (this.net.rtt * TICK_RATE) / 1000 + 1);
       this.state = State.PLAYING;
       this.input.enabled = true;
       this.ui.hideMenu();
@@ -194,7 +210,7 @@ class GameClient {
       this.lastLevel = 0;
       this.hadWeaponChoice = false;
     } else {
-      p.reconcile(s, tick);
+      p.reconcile(s);
     }
     const stealth = (s.flags & ShipFlag.STEALTH) !== 0;
     if (this.self && stealth !== ((this.self.flags & ShipFlag.STEALTH) !== 0)) {
@@ -259,6 +275,7 @@ class GameClient {
       [KillCause.RAM]: killer ? `Rammed by ${killer}` : 'Collision',
       [KillCause.ASTEROID]: killer ? `Pushed into an asteroid by ${killer}` : 'You hit an asteroid',
       [KillCause.PLANET]: killer ? `Pushed into a planet by ${killer}` : 'You crashed into a planet',
+      [KillCause.STAR]: killer ? `Shoved into the star by ${killer}` : 'You flew into the star',
       [KillCause.ALIEN]: 'Shot down by an alien saucer',
       [KillCause.MOTHERSHIP]: 'Obliterated by the Mothership',
     }[d.cause];
@@ -301,6 +318,9 @@ class GameClient {
         break;
       case KillCause.PLANET:
         parts = killer ? [killer, text(' smashed '), victim, text(' into a planet')] : [victim, text(' crashed into a planet')];
+        break;
+      case KillCause.STAR:
+        parts = killer ? [killer, text(' shoved '), victim, text(' into the star')] : [victim, text(' burned up in the star')];
         break;
       default:
         parts = [victim, text(' was shot down by aliens')];
@@ -442,12 +462,12 @@ class GameClient {
         this.hud.announce(muted ? 'SOUND OFF' : 'SOUND ON', 'Press M to toggle', '#fff', performance.now());
       },
       hudPress: (x, y) => {
-        if (this.state !== State.PLAYING) return false;
+        if (this.state !== State.PLAYING) return null;
         const action = this.hud.hitTest(x, y);
-        if (!action) return false;
+        if (!action) return null;
         if (action.type === 'upgrade') this.net.upgrade(action.stat);
         else if (action.type === 'weapon') this.net.chooseWeapon(WEAPON_CHOICES[action.weapon]);
-        return true;
+        return action; // 'blast' and 'lock' buttons are handled by the input layer
       },
     };
   }
@@ -483,40 +503,75 @@ class GameClient {
     const buttons = this.input.buttons;
     const result = p.step(buttons, dqAngle(aimQ)); // predict with exactly what the server will see
     this.net.sendInput(p.seq, buttons, aimQ);
+    // Everything below is predicted feedback: it plays the moment the key is pressed.
+    const s = p.state;
     if (result & StepResult.FIRED) this.firePredicted();
-    if (result & StepResult.IMPACT && p.state.impact > 40) {
-      // Predicted, so touchdowns and crashes give feedback without waiting for the server.
-      const s = p.state;
-      this.effects.burst(s.x, s.y, Math.min(24, 4 + Math.round(s.impact / 25)), 60 + s.impact * 0.4, Color.ROCK, 0.5, 0.03);
-      this.sound.thud(s.impact / 400);
+    if (result & StepResult.BLAST) {
+      const c = Math.cos(s.angle);
+      const sn = Math.sin(s.angle);
+      this.effects.blast(s.x + c * SHIP_NOSE, s.y + sn * SHIP_NOSE, s.angle, BLAST_RANGE, BLAST_HALF_ANGLE, s.vx, s.vy);
+      this.effects.addShake(5);
+      this.sound.blast(s.x, s.y, true);
     }
-    if (result & StepResult.THRUST) {
-      const s = p.state;
-      const boost = (result & StepResult.BOOST) !== 0;
-      if (boost || Math.random() < 0.6) {
-        const c = Math.cos(s.angle);
-        const sn = Math.sin(s.angle);
-        this.effects.exhaust(s.x - c * SHIP_RADIUS * 0.8, s.y - sn * SHIP_RADIUS * 0.8, s.angle, s.vx, s.vy, boost);
+    if (result & StepResult.LOCKED) this.onLocked();
+    if (result & StepResult.UNLOCKED) {
+      this.sound.lock(false);
+      this.hud.notice('ORBIT RELEASED', '#9fb3c8', performance.now());
+    }
+    if (result & StepResult.LOCK_FAILED) {
+      this.sound.denied();
+      this.hud.notice('NO GRAVITY WELL IN RANGE', '#ff8c42', performance.now());
+    }
+    if (result & StepResult.IMPACT) {
+      if (p.bodies[s.contactBody]?.kind === BodyKind.STAR) {
+        this.effects.burn(s.x, s.y);
+        this.sound.sizzle();
+      } else if (s.impact > 40) {
+        // Touchdowns and crashes give feedback without waiting for the server.
+        this.effects.burst(s.x, s.y, Math.min(24, 4 + Math.round(s.impact / 25)), 60 + s.impact * 0.4, Color.ROCK, 0.5, 0.03);
+        this.sound.thud(s.impact / 400);
       }
     }
+    if (result & StepResult.THRUST) this.exhaust(s, buttons, (result & StepResult.BOOST) !== 0);
+  }
+
+  /** Exhaust puffs from whichever thrusters are firing, blowing opposite their push. */
+  exhaust(s, buttons, boost) {
+    const c = Math.cos(s.angle);
+    const sn = Math.sin(s.angle);
+    const fx = this.effects;
+    const r = SHIP_RADIUS;
+    if ((boost || buttons & Button.THRUST) && (boost || Math.random() < 0.6)) {
+      fx.exhaust(s.x - c * r * 0.8, s.y - sn * r * 0.8, s.angle + Math.PI, s.vx, s.vy, boost);
+    }
+    if (buttons & Button.BACK && Math.random() < 0.5) {
+      fx.exhaust(s.x + c * r * 0.9, s.y + sn * r * 0.9, s.angle, s.vx, s.vy, false, 0.7);
+    }
+    if (buttons & Button.STRAFE_LEFT && Math.random() < 0.5) {
+      fx.exhaust(s.x - sn * r * 0.7, s.y + c * r * 0.7, s.angle + Math.PI / 2, s.vx, s.vy, false, 0.6);
+    }
+    if (buttons & Button.STRAFE_RIGHT && Math.random() < 0.5) {
+      fx.exhaust(s.x + sn * r * 0.7, s.y - c * r * 0.7, s.angle - Math.PI / 2, s.vx, s.vy, false, 0.6);
+    }
+  }
+
+  onLocked() {
+    const p = this.predictor;
+    const body = p.bodies[p.state.lockBody];
+    const s = p.state;
+    this.effects.ring(s.x, s.y, 46, SHIP_RADIUS * 1.6, 0.35, Color.CYAN);
+    this.sound.lock(true);
+    if (body) this.hud.notice(`ORBIT LOCKED · ${body.name.toUpperCase()}`, '#5cf2ff', performance.now());
   }
 
   firePredicted() {
     const p = this.predictor;
     const n = computeShots(p.state, p.weapon, p.st, this.shots);
-    const tick = p.seq + this.presentOffset();
+    const tick = p.commandTick(p.seq);
     const heavy = p.weapon === Weapon.CANNON;
     const kind = heavy ? BulletKind.CANNON : BulletKind.PLAYER;
     for (let i = 0; i < n; i++) this.world.addGhost(p.seq, i, this.shots[i], kind, p.st.bulletLife, tick);
     this.sound.fire(heavy, 0, 0, true);
-  }
-
-  /** Maps our command sequence numbers onto server ticks (see ClientWorld time bases). */
-  presentOffset() {
-    const p = this.predictor;
-    if (p.presentReady) return p.presentOffset;
-    const rttTicks = (this.net.rtt * TICK_RATE) / 1000;
-    return this.world.clock.serverTick(performance.now()) + rttTicks + 1 - p.seq;
   }
 
   render(now, dt) {
@@ -524,7 +579,8 @@ class GameClient {
     this.effects.update(dt / 1000);
     p.decayError(dt);
     const renderTick = world.clock.renderTick(now, dt);
-    const presentTick = p.active ? p.seq - 1 + this.alpha + this.presentOffset() : world.clock.serverTick(now);
+    // The present is our own ship's command time, between the last two predicted steps.
+    const presentTick = p.active ? p.commandTick(p.seq - 1) + this.alpha : world.clock.serverTick(now);
     world.updatePresentation(renderTick, presentTick);
 
     let selfView = null;
@@ -536,10 +592,13 @@ class GameClient {
       sv.ry = p.renderY(this.alpha);
       sv.ra = p.renderAngle(this.alpha);
       const local = p.lastResult;
+      const held = p.lastButtons;
       sv.flags =
-        (this.self.flags & ~(ShipFlag.THRUST | ShipFlag.BOOST | ShipFlag.BRAKE)) |
-        (local & StepResult.THRUST ? ShipFlag.THRUST : 0) |
-        (local & StepResult.BOOST ? ShipFlag.BOOST : 0);
+        (this.self.flags & ~(ShipFlag.THRUST | ShipFlag.BOOST | ShipFlag.BRAKE | ShipFlag.LOCKED)) |
+        (local & StepResult.THRUST && (local & StepResult.BOOST || held & Button.THRUST) ? ShipFlag.THRUST : 0) |
+        (local & StepResult.BOOST ? ShipFlag.BOOST : 0) |
+        (p.state.lockBody >= 0 ? ShipFlag.LOCKED : 0);
+      sv.thrusters = local & StepResult.THRUST ? held & (Button.BACK | Button.STRAFE_LEFT | Button.STRAFE_RIGHT) : 0;
       sv.playerId = this.myPlayerId;
       sv.level = this.stats?.level ?? 1;
       sv.weapon = p.weapon;
@@ -562,6 +621,20 @@ class GameClient {
       cam.y = far ? ty : wrapLerp(cam.y, ty, ease, WORLD_SIZE);
     }
 
+    let flight = null;
+    let lock = null;
+    if (selfView) {
+      flight = this.flight;
+      flight.update(p.state, p.st, world.planets, p.commandTick(p.seq), selfView.rx, selfView.ry);
+      const body = p.state.lockBody >= 0 ? world.planets[p.state.lockBody] : null;
+      if (body) {
+        lock = this.lockView;
+        lock.body = body;
+        lock.radius = p.state.lockRadius;
+        lock.dir = p.state.lockDir;
+      }
+    }
+
     renderer.setViewScale(viewScale);
     if (this.debug) this.updateDebug(now);
     const shake = this.effects.shake;
@@ -577,6 +650,8 @@ class GameClient {
       self: selfView,
       effects: this.effects,
       time: now / 1000,
+      flight,
+      lock,
     });
     if (selfView) renderer.toScreen(selfView.rx, selfView.ry, cam.x, cam.y, this.shipScreen);
 
@@ -600,6 +675,9 @@ class GameClient {
       serverTick: world.clock.serverTick(now),
       touch: this.input.touchMode,
       planets: world.planets,
+      flight,
+      blastReady: p.active && p.state.blastCooldown === 0 && p.state.energy >= p.st.blastCost,
+      blastCharge: p.active ? 1 - p.state.blastCooldown / p.st.blastInterval : 0,
       shipX: selfView ? selfView.rx : 0,
       shipY: selfView ? selfView.ry : 0,
       touchStick: this.input.touchMode && this.input.stick.id !== -1 ? this.input.stick : null,

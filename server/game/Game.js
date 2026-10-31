@@ -4,7 +4,7 @@
  * notable events. It has no knowledge of sockets, so it can be driven
  * directly by tests, benchmarks and bots.
  */
-import { KillCause, WORLD_SIZE } from '../../shared/constants.js';
+import { KillCause, SNAPSHOT_INTERVAL, WORLD_SIZE } from '../../shared/constants.js';
 import { createRng } from '../../shared/math.js';
 import { updateAliens, collideAliens, maintainAliens } from './aliens.js';
 import { maintainAsteroids, seedAsteroids, updateAsteroids } from './asteroids.js';
@@ -14,7 +14,7 @@ import { killShip } from './combat.js';
 import { IdPool } from './IdPool.js';
 import { randomName } from './names.js';
 import { maintainPickups, updatePickups } from './pickups.js';
-import { generatePlanets, maintainBelts, seedBelts } from './planets.js';
+import { generateSolarSystem, maintainBelts, seedBelts, updateBodies } from './planets.js';
 import { Player } from './Player.js';
 import { chooseWeapon, collideShips, despawnShip, processShipInputs, updateShips, upgradeStat } from './ships.js';
 import { spawnShip } from './spawning.js';
@@ -43,7 +43,13 @@ export class Game {
     this.nextBotCheck = 0;
     /** Notable events for the network layer to broadcast; it clears them after each tick. */
     this.outbox = { roster: [], rosterRemoved: [], kills: [], deaths: [], announcements: [] };
-    this.planets = generatePlanets(this.rng);
+    /** The star and planets (see shared/gravity.js); posed for the current tick at the start of each step. */
+    this.planets = generateSolarSystem(this.rng);
+    /**
+     * Recent visual effects (blasts) for the network layer to replicate. Each
+     * is kept for exactly one snapshot interval, so every snapshot sees it once.
+     */
+    this.fx = [];
     seedAsteroids(this);
     seedBelts(this);
     this.rebuildGrid();
@@ -113,6 +119,8 @@ export class Game {
 
   step() {
     this.tick++;
+    updateBodies(this);
+    this.pruneEffects();
     this.spawnWaitingPlayers();
     runBots(this);
     processShipInputs(this);
@@ -139,9 +147,17 @@ export class Game {
         player.wantsSpawn = false;
         player.inputs.clear();
         player.credits = 0;
+        player.timeAnchored = false;
         spawnShip(this, player);
       }
     }
+  }
+
+  pruneEffects() {
+    const fx = this.fx;
+    let n = 0;
+    for (let i = 0; i < fx.length; i++) if (fx[i].tick > this.tick - SNAPSHOT_INTERVAL) fx[n++] = fx[i];
+    fx.length = n;
   }
 
   /** Registers a new entity: assigns an id and makes it visible to grid queries immediately. */

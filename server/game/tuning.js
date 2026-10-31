@@ -2,7 +2,8 @@
  * Server-only gameplay tuning. Durations are in ticks (use `seconds()`),
  * distances in world units, speeds in units per second.
  */
-import { TICK_RATE } from '../../shared/constants.js';
+import { BLAST_HALF_ANGLE, BLAST_RANGE, TICK_RATE } from '../../shared/constants.js';
+import { GRAVITY } from '../../shared/gravity.js';
 
 export const seconds = (s) => Math.round(s * TICK_RATE);
 
@@ -19,6 +20,12 @@ export const SHIP = Object.freeze({
   contactCooldown: seconds(0.3),
   hitKnockback: 2.5, // velocity gained per point of projectile damage
   maxCredits: 16, // queued input commands a ship may bank (jitter buffer, speed-hack cap)
+  // Command time (see processShipInputs): re-anchored at once when it drifts
+  // further than timeSlack ticks from world time, or when it stays more than
+  // timeSoftSlack ticks off for timeDriftLimit commands in a row.
+  timeSlack: 12,
+  timeSoftSlack: 3,
+  timeDriftLimit: seconds(1),
 });
 
 export const ASTEROID = Object.freeze({
@@ -27,9 +34,9 @@ export const ASTEROID = Object.freeze({
   contactDamage: [8, 15, 26],
   mass: [2, 6, 16],
   speed: [[60, 140], [40, 95], [20, 55]], // [min, max] by size
-  maxSpeed: 220,
+  maxSpeed: 360, // rammed or blasted rocks are capped here
   massUnits: [1, 2, 4], // contribution towards the population target
-  targetMass: 360,
+  targetMass: 640,
   massPerShip: 4, // busier rooms get a denser field
   maxSpawnsPerCheck: 3,
   spawnEvery: seconds(0.5),
@@ -62,7 +69,7 @@ export const ALIENS = Object.freeze([
 ]);
 
 export const ALIEN_SPAWN = Object.freeze({
-  base: 2,
+  base: 3,
   shipsPerAlien: 4,
   max: 10,
   every: seconds(6),
@@ -77,20 +84,39 @@ export const MOTHERSHIP = Object.freeze({
   minShips: 4,
 });
 
+/** The solar system: a fixed star orbited by one planet of each type. */
 export const PLANETS = Object.freeze({
-  count: 3,
-  spacing: 500, // clear space between neighbouring gravity wells
-  // One planet of each type: [min, max] radius and density. Mass ∝ density × radius³.
-  types: [
-    { radius: [200, 250], density: [0.4, 0.65] }, // gas giant: huge and light, gentle pull
-    { radius: [120, 170], density: [0.9, 1.4] }, // rocky world
-    { radius: [70, 95], density: [3.0, 3.8] }, // dense core: small, but pulls hardest (may out-pull base thrust)
-  ],
-  orbitClearance: 45, // gap between the surface and the innermost orbit
-  orbitReach: 0.8, // outermost orbit, as a fraction of the gravity range
+  star: { radius: 200, density: 0.64 },
+  // [min, max] radius and density per planet type. Mass ∝ density × radius³.
+  types: {
+    core: { radius: [70, 92], density: [2.8, 3.4] }, // small, but pulls hardest (may out-pull base thrust)
+    rock: { radius: [120, 160], density: [0.9, 1.3] },
+    gas: { radius: [200, 235], density: [0.4, 0.58] }, // huge and light, gentle pull
+  },
+  wellGap: 90, // clear space between neighbouring gravity wells
+  // Orbital periods around the star. The rocky world and the gas giant share
+  // the outer orbit on opposite sides, so their wells never meet.
+  innerPeriod: seconds(150),
+  outerPeriod: seconds(260),
+  orbitClearance: 45, // gap between a planet's surface and its innermost belt orbit
+  orbitReach: 0.8, // outermost belt orbit, as a fraction of the gravity range
   beltMassPerRange: 1 / 28, // orbiting rock mass kept around a planet, per unit of range
-  crashSafeSpeed: 120, // touching down slower than this is a landing
+  crashSafeSpeed: GRAVITY.crashSpeed, // touching down slower than this is a landing
   crashDamage: 0.22, // hull damage per unit of impact speed above the safe speed
+  starBurn: 18, // hull damage per burn while touching the star...
+  burnInterval: seconds(0.1), // ...one burn every this many ticks
+});
+
+/** The kinetic blast (P): a cone of force in front of the ship. */
+export const BLAST = Object.freeze({
+  range: BLAST_RANGE, // measured to the target's surface
+  halfAngle: BLAST_HALF_ANGLE, // radians either side of the nose
+  impulse: 520, // velocity change (units/s) at point blank...
+  edgeShare: 0.3, // ...falling linearly to this share of it at the edge of the range
+  rockShare: [1, 0.75, 0.5], // by asteroid size: big rocks are harder to shove
+  shipShare: 0.7, // other ships are heavier than rocks
+  alienShare: 0.5,
+  creditWindow: seconds(4), // a shoved rock that hits a ship this soon credits the shover
 });
 
 export const PICKUP = Object.freeze({

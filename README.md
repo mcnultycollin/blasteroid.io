@@ -16,15 +16,23 @@ Requires Node.js 20 or newer. The only runtime dependency is
 
 | Action | Mouse + keyboard | Classic keys | Touch |
 | --- | --- | --- | --- |
-| Aim / turn | move the mouse | `A` `D` or arrows | drag left side |
-| Thrust | right click or `W` | `W` / `↑` | drag left side |
+| Aim / turn | move the mouse | `←` `→` | drag left side |
+| Thrusters: forward, left, back, right | `W` `A` `S` `D` (right click: forward) | `↑` (forward) | drag left side (forward) |
 | Fire | left click or `Space` | `Space` | hold right side |
-| Brake | `S` | `S` / `↓` | |
+| Retro brake | `Q` | `↓` | `BRAKE` button |
 | Boost | `Shift` | `Shift` | drag the stick far |
+| Kinetic blast | `P` | `P` | `BLAST` button |
+| Lock / release orbit | `L` | `L` | `LOCK` button |
 | Upgrade a stat | `1`–`8` or click the panel | | tap the panel |
 | Choose a weapon (level 10) | `Z` `X` `C` or click | | tap a card |
 | Mute / netgraph | `M` / `F3` | | |
 | Hide from bots and aliens (testing) | `I` | | |
+
+- **Flight**: space has no drag. Your ship drifts until something changes its
+  course. The thrusters fire relative to your nose, so with the mouse aiming
+  you can strafe around a target, back off while shooting, or hold position
+  against a planet's pull. Thrusters cannot push you past cruise speed (boost
+  goes faster), but gravity can: dive past a planet to slingshot.
 
 - **Score** comes from asteroids (smaller is worth more), aliens, other
   pilots and the orbs they drop, plus a trickle for staying alive and active.
@@ -34,12 +42,29 @@ Requires Node.js 20 or newer. The only runtime dependency is
 - **At level 10** pick a weapon: *Twin* (parallel shots), *Scatter*
   (three-way spread) or *Cannon* (slow, heavy, long range).
 - **Power-ups**: Shield, Rapid fire, Repair and Overdrive (unlimited boost).
-- **Planets**: each has a gravity well, shown as a dashed ring, that tugs
-  your ship and holds a belt of orbiting rocks. A planet's mass comes from
-  its size × density, so small dense cores pull hardest near the surface
-  (sometimes harder than your engines; the HUD shows the pull as a share of
-  your thrust). Touch down gently to land; crash fast and it hurts. Planets
-  also block shots, so you can hide behind them.
+- **The solar system**: a star sits at the centre of the arena, orbited by a
+  small, dense core world on the inner orbit and a rocky world and a gas giant
+  sharing the outer orbit on opposite sides. Every body has a gravity well,
+  drawn as a glowing field: the haze follows the strength of the pull,
+  contour rings mark where it doubles, and ripples fall inwards. A body's
+  mass comes from its size × density, so the small core pulls hardest near
+  its surface (sometimes harder than your engines; the HUD shows the pull as
+  a share of your thrust). Each planet carries a belt of orbiting rocks.
+- **Orbits**: inside a well the well you are in lights up in the colour of
+  your path, which is drawn ahead of your ship: green for a stable orbit,
+  yellow for a gentle touchdown, red for a crash (with a countdown), white for
+  an escape. The readout above your hull bar shows altitude, periapsis and
+  apoapsis. Press `L` to lock into a circular orbit at your current altitude
+  and ride it hands-free while you fight; any thruster, the brake, a blast,
+  `L` again or a collision releases you. Land gently on a planet and you ride
+  along with it; crash fast and it hurts. The star burns anything that
+  touches it. Bodies block shots, so you can hide behind them.
+- **Kinetic blast** (`P`): a cone of force from your nose that shoves rocks,
+  ships and saucers away from you and kicks you backwards. It knocks belt
+  rocks off their orbits into a planet, out of the well, or into an enemy,
+  who is then hit by *you*; shoving a pilot into a planet or the star counts
+  as your kill too. It costs energy and recharges in just over a second (the
+  ring beside your hull bar). Ramming a belt rock knocks it loose as well.
 - **Aliens**: saucers spray shots, hunters lead their aim and go after
   leaders. Every few minutes a **Mothership** arrives with radial barrages
   and hunter escorts; destroying it pays out big.
@@ -67,7 +92,8 @@ shared/                code the server and browser both run
   constants.js         tick rate, world size, wire enums
   math.js              torus math, swept collisions, seeded RNG
   stats.js             levels, upgrades, weapons, derived ship stats
-  physics.js           deterministic ship step, used for prediction
+  gravity.js           star and planets on rails, gravity, surfaces, orbits
+  physics.js           deterministic ship step (thrusters, orbit lock, blast), used for prediction
   protocol.js          binary encoders/decoders for every message
 server/
   index.js             HTTP + WebSocket server (startServer)
@@ -90,7 +116,9 @@ commands, refilled one per tick. That absorbs network jitter, but flooding
 commands can never move a ship faster than real time.
 
 **Client-side prediction.** Your ship runs the same `stepShip()` as the
-server, so input feels instant. Snapshots carry your ship's exact state
+server, so input feels instant: thrusters, brake, orbit lock and the blast's
+recoil are all predicted, and the blast's effect and sound play the moment you
+press the key. Snapshots carry your ship's exact state
 after the last input the server applied. The client rewinds to that state and
 replays the inputs that are still unacknowledged. With no outside influence
 the replay lands exactly where you already were, so there is no visual
@@ -107,14 +135,27 @@ predicted and later matched to the server's projectiles by input sequence
 number. Other players' shots leave their muzzle and then catch up to the
 present.
 
-**Gravity.** Planets never move, and every client receives them once. Gravity,
-landing and bouncing all live in the shared ship physics, so your ship's
-motion near a planet is predicted exactly, with no corrections. Gravity math
-uses only operations that IEEE 754 makes bit-identical in every browser.
-Belt rocks ride exact circular orbits, so each one is sent once as orbit
-parameters and drawn analytically. Only rocks knocked loose inside a well are
-streamed every snapshot; orbital decay makes them spiral in and crash, so they
-never pile up.
+**Moving planets, exactly predicted.** The star and planets ride fixed
+circular orbits ("on rails"), so a body's position is an exact function of
+time. Clients receive the orbits once, in the welcome message, and compute
+every body themselves: moving planets cost no bandwidth at all. Gravity,
+landing, bouncing and the orbit lock all live in the shared ship physics.
+What makes moving bodies predictable is *command time*: the server runs your
+input command `n` at world tick `n + offset`, with every body posed for that
+tick, and tells you the offset in each snapshot. Your client poses its own
+copies for the same tick, so near a moving planet the replay still lands
+exactly where you already were, even when jitter makes your commands arrive
+in bursts. The offset is set when you spawn and only re-anchored if it drifts
+far from world time (one tiny correction near a planet). Gravity math uses
+only operations that IEEE 754 makes bit-identical in every browser.
+
+Belt rocks ride exact circular orbits around their moving planet, so each one
+is sent once as orbit parameters and drawn analytically. Rocks knocked loose
+(by a blast, a ram or a split) fall freely and are streamed every snapshot
+while inside a well; orbital decay, relative to the planet they circle, makes
+them spiral in and crash, so they never pile up. Other pilots inside a well
+are drawn carried along with its planet, so a ship parked on a moving world
+sits on its surface on everyone's screen.
 
 **Bandwidth.** A compact binary protocol runs over raw WebSockets with
 compression off for latency. Positions are 16-bit, and your own ship is sent
@@ -127,15 +168,16 @@ the right effect.
 ## Performance
 
 `npm run bench` runs a full room of bots and encodes a snapshot for every
-player, as if each were connected. Measured on the development container,
-with planets:
+player, as if each were connected. Measured on the development container in
+the 8192² solar-system arena, with moving planets, belts and bots using
+thrusters and blasts:
 
 | Players | Simulation per tick | Snapshots per round | CPU (one core) | Snapshot size | Per-client downstream |
 | --- | --- | --- | --- | --- | --- |
-| 40 | 0.22 ms | 0.47 ms | 2.7% | 133 B | 3.9 KiB/s |
-| 80 | 0.50 ms | 1.55 ms | 7.6% | 198 B | 5.8 KiB/s |
-| 160 | 0.94 ms | 4.16 ms | 18% | 338 B | 9.9 KiB/s |
-| 320 | 1.84 ms | 11.6 ms | 46% | 566 B | 16.6 KiB/s |
+| 40 | 0.27 ms | 0.38 ms | 2.8% | 116 B | 3.4 KiB/s |
+| 80 | 0.53 ms | 1.10 ms | 6.5% | 163 B | 4.8 KiB/s |
+| 160 | 0.83 ms | 2.75 ms | 13% | 248 B | 7.3 KiB/s |
+| 320 | 1.76 ms | 7.85 ms | 34% | 421 B | 12.3 KiB/s |
 
 **Room size and lag.** Players only receive what is on their screen, so
 per-player bandwidth depends on how crowded the arena is, not on how many
@@ -144,17 +186,18 @@ Measured with a 4× larger arena:
 
 | Arena | Players | CPU (one core) | Per-client downstream |
 | --- | --- | --- | --- |
-| 6144² | 40 | 2.7% | 3.9 KiB/s |
-| 12288² | 160 | 12% | 3.8 KiB/s |
-| 6144² | 80 | 7.6% | 5.8 KiB/s |
-| 12288² | 320 | 32% | 5.7 KiB/s |
+| 8192² | 40 | 2.8% | 3.4 KiB/s |
+| 16384² | 160 | 6.4% | 3.3 KiB/s |
+| 8192² | 80 | 6.5% | 4.8 KiB/s |
+| 16384² | 320 | 15% | 4.4 KiB/s |
 
 Room size adds no latency until a room's work per tick approaches the
 16.7 ms tick budget. Before that, ping and the ~70 ms interpolation buffer
 dominate what players feel. Cramming more players into the same arena costs
 roughly quadratically, because everyone sees more. The arena size is
-`WORLD_SIZE` in `shared/constants.js`; positions are 16-bit, which stays
-precise to about 0.2 units up to a 12288² arena.
+`WORLD_SIZE` in `shared/constants.js` (the solar system is laid out from the
+centre and needs at least 8192²); positions are 16-bit, which stays precise to
+about a quarter unit up to a 16384² arena.
 
 Collision checks and interest queries use a uniform spatial grid, so cost grows
 with local density rather than with the square of the entity count. Rooms are
@@ -201,9 +244,14 @@ It's a development aid, so production servers ignore it unless `DEV_TOOLS=1`.
 
 - **Balance**: player-facing numbers (stats, weapons, levels) live in
   `shared/stats.js`, everything else in `server/game/tuning.js`.
-- **Planets**: count, sizes, densities, belts and crash damage are in
-  `PLANETS` (`server/game/tuning.js`); the gravity law (strength, range, fade,
-  landing) is in `GRAVITY` (`shared/gravity.js`).
+- **The solar system**: the star, planet sizes and densities, orbital periods,
+  belts, crash damage and the star's burn are in `PLANETS`
+  (`server/game/tuning.js`); the gravity law (strength, range, fade, landing
+  and crash speeds) is in `GRAVITY` (`shared/gravity.js`).
+- **Flight and abilities**: cruise and boost speeds, thruster strengths, the
+  brake and the blast's cost, cooldown and recoil are in `shared/stats.js`;
+  the blast's push is `BLAST` in `server/game/tuning.js`, its cone in
+  `shared/constants.js`.
 - **New weapon**: add an entry to `WEAPONS` in `shared/stats.js` (muzzles,
   multipliers) and list it in `WEAPON_CHOICES`. Prediction picks it up
   automatically.

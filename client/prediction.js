@@ -7,8 +7,14 @@
  * N+1..latest. With no outside interference (collisions, knockback) the
  * replay lands exactly where we already were; otherwise the difference is
  * smoothed out visually instead of snapping.
+ *
+ * Command time: the server runs command `seq` at world tick `seq +
+ * timeOffset`, with the star and planets posed for that tick, and reports the
+ * offset in every snapshot. Until the first report of a life arrives we use an
+ * estimate; spawns are far from any gravity well, so it never matters.
  */
 import { Powerup, WORLD_SIZE } from '../shared/constants.js';
+import { poseBodies } from '../shared/gravity.js';
 import { lerpAngle, wrap, wrapDelta, wrapLerp } from '../shared/math.js';
 import { copyShipState, createShipState, stepShip } from '../shared/physics.js';
 import { NO_ID } from '../shared/protocol.js';
@@ -29,19 +35,31 @@ export class Predictor {
     this.seq = 0; // last command sequence generated (monotonic for the connection)
     this.lifeFirstSeq = 1; // first command of the current life
     this.pendingSeq = new Uint32Array(MAX_PENDING);
-    this.pendingButtons = new Uint8Array(MAX_PENDING);
+    this.pendingButtons = new Uint16Array(MAX_PENDING);
     this.pendingAim = new Float64Array(MAX_PENDING);
     this.pendingHead = 0;
     this.pendingCount = 0;
     this.errorX = 0; // visual offset still being blended out
     this.errorY = 0;
-    this.presentOffset = 0; // server tick minus command sequence
-    this.presentReady = false;
+    this.timeOffset = 0; // command seq -> world tick (see above)
+    this.timeKnown = false; // the server has reported the offset for this life
     this.lastButtons = 0;
     this.lastResult = 0;
     this.corrections = 0; // reconciliations that moved the ship (collisions, knockback, loss)
     this.lastCorrection = 0;
-    this.planets = []; // static, from the welcome message; gravity is predicted exactly
+    this.bodies = []; // the star and planets, from the welcome message; posed per command
+    this.posed = [];
+  }
+
+  /** The world tick command `seq` runs at. */
+  commandTick(seq) {
+    return seq + this.timeOffset;
+  }
+
+  /** Steps the ship with one command at its command time. */
+  simulate(seq, buttons, aim) {
+    const tick = seq + this.timeOffset;
+    return stepShip(this.state, buttons, aim, this.st, poseBodies(this.bodies, tick, this.posed), tick);
   }
 
   setStats(stats) {
@@ -55,17 +73,22 @@ export class Predictor {
     this.weapon = stats.weapon;
   }
 
-  /** Starts predicting a freshly spawned ship from its first authoritative state. */
-  start(self) {
+  /**
+   * Starts predicting a freshly spawned ship from its first authoritative
+   * state. `firstTick` estimates the world tick at which the server will run
+   * our first command.
+   */
+  start(self, firstTick) {
     this.active = true;
     this.shipId = self.id;
     copyShipState(this.state, self);
     copyShipState(this.prev, self);
     this.pendingCount = 0;
     this.lifeFirstSeq = this.seq + 1;
+    this.timeOffset = Math.round(firstTick) - this.lifeFirstSeq;
+    this.timeKnown = false;
     this.errorX = 0;
     this.errorY = 0;
-    this.presentReady = false;
   }
 
   stop() {
@@ -88,15 +111,20 @@ export class Predictor {
     this.pendingCount++;
     copyShipState(this.prev, this.state);
     this.lastButtons = buttons;
-    this.lastResult = stepShip(this.state, buttons, aim, this.st, this.planets);
+    this.lastResult = this.simulate(seq, buttons, aim);
     return this.lastResult;
   }
 
   /** Rewinds to the server's state after `self.ackSeq` and replays newer commands. */
-  reconcile(self, tick) {
+  reconcile(self) {
     while (this.pendingCount > 0 && this.pendingSeq[this.pendingHead] <= self.ackSeq) {
       this.pendingHead = (this.pendingHead + 1) % MAX_PENDING;
       this.pendingCount--;
+    }
+    if (self.ackSeq >= this.lifeFirstSeq) {
+      // The server has run commands from this life: its offset is authoritative.
+      this.timeOffset = self.timeOffset;
+      this.timeKnown = true;
     }
     const oldX = this.state.x;
     const oldY = this.state.y;
@@ -105,7 +133,7 @@ export class Predictor {
     for (let k = 0; k < this.pendingCount; k++) {
       const i = (this.pendingHead + k) % MAX_PENDING;
       if (k === this.pendingCount - 1) copyShipState(this.prev, this.state);
-      stepShip(this.state, this.pendingButtons[i], this.pendingAim[i], this.st, this.planets);
+      this.simulate(this.pendingSeq[i], this.pendingButtons[i], this.pendingAim[i]);
     }
     const dx = wrapDelta(oldX - this.state.x, WORLD_SIZE);
     const dy = wrapDelta(oldY - this.state.y, WORLD_SIZE);
@@ -120,13 +148,6 @@ export class Predictor {
     } else {
       this.errorX += dx;
       this.errorY += dy;
-    }
-    // The server applied command `ackSeq` at `tick`; that offset maps our
-    // command numbers onto server time for everything drawn in the present.
-    if (self.ackSeq >= this.lifeFirstSeq) {
-      const observed = tick - self.ackSeq;
-      this.presentOffset = this.presentReady ? this.presentOffset + (observed - this.presentOffset) * 0.1 : observed;
-      this.presentReady = true;
     }
   }
 

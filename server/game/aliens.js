@@ -1,6 +1,6 @@
 /** Alien saucers, hunters and the mothership world event. */
 import { AlienKind, Announce, BulletKind, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
-import { applyGravity, collidePlanets } from '../../shared/gravity.js';
+import { applyGravity, collideBodies, isStar } from '../../shared/gravity.js';
 import { TAU, interceptTime, wrap, wrapDelta } from '../../shared/math.js';
 import { NO_ID } from '../../shared/protocol.js';
 import { damageAlien, damageAsteroid } from './combat.js';
@@ -11,6 +11,7 @@ import { ALIEN_SPAWN, MOTHERSHIP, PLANETS, seconds } from './tuning.js';
 const nearby = [];
 const shot = { x: 0, y: 0, vx: 0, vy: 0 };
 const ALIEN_HITS = Mask.SHIP | Mask.ASTEROID;
+const contact = { impact: 0, body: null };
 
 export function updateAliens(game) {
   for (const al of game.aliens) {
@@ -51,13 +52,15 @@ export function updateAliens(game) {
     if (grounded) applyGravity(al, game.planets);
     al.x = wrap(al.x + al.vx * TICK_DT, WORLD_SIZE);
     al.y = wrap(al.y + al.vy * TICK_DT, WORLD_SIZE);
-    if (grounded) {
-      const impact = collidePlanets(al, al.radius, game.planets);
-      if (impact > PLANETS.crashSafeSpeed && al.contactCooldown === 0) {
+    if (grounded && collideBodies(al, al.radius, game.planets, contact) > 0 && al.contactCooldown === 0) {
+      if (isStar(contact.body)) {
+        al.contactCooldown = PLANETS.burnInterval;
+        damageAlien(game, al, PLANETS.starBurn, null);
+      } else if (contact.impact > PLANETS.crashSafeSpeed) {
         al.contactCooldown = seconds(0.5);
-        damageAlien(game, al, (impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage, null);
-        if (al.dead) continue;
+        damageAlien(game, al, (contact.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage, null);
       }
+      if (al.dead) continue;
     }
 
     if (al.fireCooldown > 0) al.fireCooldown--;
@@ -101,9 +104,10 @@ function think(game, al) {
     const dx = wrapDelta(al.x - p.x, WORLD_SIZE);
     const dy = wrapDelta(al.y - p.y, WORLD_SIZE);
     const d = Math.hypot(dx, dy) || 1;
-    const clear = p.radius + al.radius + 180;
+    const margin = isStar(p) ? 320 : 180; // the star pulls hard and burns
+    const clear = p.radius + al.radius + margin;
     if (d < clear) {
-      const push = ((clear - d) / 180) * def.speed * 2;
+      const push = ((clear - d) / margin) * def.speed * 2;
       al.avoidX += (dx / d) * push;
       al.avoidY += (dy / d) * push;
     }

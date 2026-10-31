@@ -12,9 +12,11 @@ import {
   TICK_RATE,
   WORLD_SIZE,
 } from '../../shared/constants.js';
+import { isStar, poseBodies } from '../../shared/gravity.js';
 import { clamp, wrap, wrapDelta } from '../../shared/math.js';
 import { StepResult, computeShots, stepShip } from '../../shared/physics.js';
 import { STAT_COUNT, STAT_MAX, WEAPON_CHOICES, Weapon } from '../../shared/stats.js';
+import { applyBlast, breakLock } from './abilities.js';
 import {
   awardScore,
   collectPickup,
@@ -24,8 +26,9 @@ import {
   refreshStats,
 } from './combat.js';
 import { Mask } from './entities.js';
+import { releaseFromOrbit } from './planets.js';
 import { spawnBullet } from './spawning.js';
-import { ASTEROID, PICKUP, PLANETS, REWARD, SHIP } from './tuning.js';
+import { ASTEROID, BLAST, PICKUP, PLANETS, REWARD, SHIP } from './tuning.js';
 
 const shots = [];
 const nearby = [];
@@ -34,11 +37,17 @@ const CONTACTS = Mask.SHIP | Mask.ASTEROID | Mask.ALIEN | Mask.PICKUP;
 
 /* Input --------------------------------------------------------------------- */
 
+const poseScratch = []; // bodies posed at a command's own tick
+
 /**
  * Applies queued input commands. Each command advances its ship by exactly
  * one physics step, mirroring client-side prediction. Ships bank at most
  * `maxCredits` commands, refilled one per tick, so a client can catch up after
  * jitter but can never run faster than real time.
+ *
+ * Each command runs at its own command time (see commandTick) with the star
+ * and planets posed for that tick, exactly as the client predicted it, even
+ * when jitter makes commands arrive in bursts.
  */
 export function processShipInputs(game) {
   for (const player of game.players.values()) {
@@ -48,17 +57,42 @@ export function processShipInputs(game) {
     const q = player.inputs;
     while (q.size > 0 && player.credits > 0) {
       const i = q.first;
-      applyCommand(game, ship, q.buttons[i], q.aims[i], q.seqs[i]);
-      player.ackSeq = q.seqs[i];
-      q.drop();
+      const seq = q.seqs[i];
+      const buttons = q.buttons[i];
+      const aim = q.aims[i];
+      q.drop(); // before applying: a death mid-command clears the queue
       player.credits--;
+      player.ackSeq = seq;
+      const tick = commandTick(game, player, seq);
+      const bodies = tick === game.tick ? game.planets : poseBodies(game.planets, tick, poseScratch);
+      applyCommand(game, ship, buttons, aim, seq, bodies, tick);
+      if (ship.dead) break;
     }
   }
 }
 
-function applyCommand(game, ship, buttons, aim, seq) {
-  const result = stepShip(ship, buttons, aim, ship.st, game.planets);
-  if (result & StepResult.IMPACT) crashIntoPlanet(game, ship);
+/**
+ * The world tick command `seq` simulates: `seq + timeOffset`. The offset is
+ * anchored by the first command of each life and sent with every snapshot.
+ * It is re-anchored, costing the client one small correction near moving
+ * bodies, when command time drifts far from world time, or stays a little
+ * off for a sustained stretch (so a landed ship never visibly lags its planet).
+ */
+export function commandTick(game, player, seq) {
+  let tick = seq + player.timeOffset;
+  const drift = tick - game.tick;
+  player.timeDrift = drift > SHIP.timeSoftSlack || drift < -SHIP.timeSoftSlack ? player.timeDrift + 1 : 0;
+  if (!player.timeAnchored || drift > SHIP.timeSlack || drift < -SHIP.timeSlack || player.timeDrift > SHIP.timeDriftLimit) {
+    player.timeOffset = game.tick - seq;
+    player.timeAnchored = true;
+    player.timeDrift = 0;
+    tick = game.tick;
+  }
+  return tick;
+}
+
+function applyCommand(game, ship, buttons, aim, seq, bodies, tick) {
+  const result = stepShip(ship, buttons, aim, ship.st, bodies, tick);
   ship.thrusting = (result & StepResult.THRUST) !== 0;
   ship.boosting = (result & StepResult.BOOST) !== 0;
   ship.braking = (result & StepResult.BRAKE) !== 0;
@@ -66,6 +100,9 @@ function applyCommand(game, ship, buttons, aim, seq) {
   if ((buttons & ~Button.AIM) !== 0 || aim !== ship.lastAim) ship.lastActiveTick = game.tick;
   ship.lastButtons = buttons;
   ship.lastAim = aim;
+  if (result & StepResult.IMPACT) touchBody(game, ship);
+  if (ship.dead) return;
+  if (result & StepResult.BLAST) applyBlast(game, ship);
   if (result & StepResult.FIRED) fireWeapon(game, ship, seq);
 }
 
@@ -113,7 +150,8 @@ export function updateShips(game) {
       (ship.shield > 0 ? ShipFlag.SHIELD : 0) |
       (ship.powerups[Powerup.RAPID] > 0 ? ShipFlag.RAPID : 0) |
       (ship.powerups[Powerup.OVERDRIVE] > 0 ? ShipFlag.OVERDRIVE : 0) |
-      (ship.player.stealth ? ShipFlag.STEALTH : 0);
+      (ship.player.stealth ? ShipFlag.STEALTH : 0) |
+      (ship.lockBody >= 0 ? ShipFlag.LOCKED : 0);
   }
 }
 
@@ -123,21 +161,21 @@ function expirePowerup(ship, p) {
   ship.statsVersion++;
 }
 
-/** Hard planet impacts hurt; gentle touchdowns are landings. */
-function crashIntoPlanet(game, ship) {
-  if (ship.impact <= PLANETS.crashSafeSpeed || ship.contactCooldown > 0) return;
-  ship.contactCooldown = SHIP.contactCooldown;
-  let planet = game.planets[0];
-  let best = Infinity;
-  for (const p of game.planets) {
-    const d = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE)) - p.radius;
-    if (d < best) {
-      best = d;
-      planet = p;
-    }
+/**
+ * Surface contact from the last physics step: the star burns anything that
+ * touches it, hard planet impacts hurt, and gentle touchdowns are landings.
+ */
+function touchBody(game, ship) {
+  const body = game.planets[ship.contactBody];
+  if (!body || ship.contactCooldown > 0) return;
+  if (isStar(body)) {
+    ship.contactCooldown = PLANETS.burnInterval;
+    damageShip(game, ship, PLANETS.starBurn, null, KillCause.STAR, body.x, body.y);
+  } else if (ship.impact > PLANETS.crashSafeSpeed) {
+    ship.contactCooldown = SHIP.contactCooldown;
+    const damage = (ship.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage;
+    damageShip(game, ship, damage, null, KillCause.PLANET, body.x, body.y);
   }
-  const damage = (ship.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage;
-  damageShip(game, ship, damage, null, KillCause.PLANET, planet.x, planet.y);
 }
 
 /** Removes a ship without a kill (idle timeout or player leaving). */
@@ -186,18 +224,21 @@ export function collideShips(game) {
 /**
  * Resolves an overlap between `a` (pushed by `shareA` of the overlap) and `b`
  * along the normal from a to b, then exchanges momentum. Returns the closing
- * speed before the bounce (0 when already separating).
+ * speed before the bounce (0 when already separating). Contact knocks ships
+ * out of orbit locks.
  */
 function bounce(a, b, dx, dy, distSq, massA, massB, restitution) {
   const dist = Math.sqrt(distSq) || 1;
   const nx = dx / dist;
   const ny = dy / dist;
   const overlap = a.radius + b.radius - dist;
-  const shareA = massB === Infinity ? 1 : massB / (massA + massB);
+  const shareA = massB / (massA + massB);
   a.x = wrap(a.x - nx * overlap * shareA, WORLD_SIZE);
   a.y = wrap(a.y - ny * overlap * shareA, WORLD_SIZE);
   b.x = wrap(b.x + nx * overlap * (1 - shareA), WORLD_SIZE);
   b.y = wrap(b.y + ny * overlap * (1 - shareA), WORLD_SIZE);
+  if (a.type === EntityType.SHIP) breakLock(a);
+  if (b.type === EntityType.SHIP) breakLock(b);
   const closing = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
   if (closing <= 0) return 0;
   const j = ((1 + restitution) * closing) / (1 / massA + 1 / massB);
@@ -211,23 +252,26 @@ function bounce(a, b, dx, dy, distSq, massA, massB, restitution) {
 const impactScale = (closing) => clamp(closing / 250, 0.4, 2);
 
 function hitAsteroid(game, ship, asteroid, dx, dy, distSq) {
-  // Belt rocks stay locked to their orbits: the ship bounces off them.
-  const railed = asteroid.orbit !== null;
-  const closing = bounce(ship, asteroid, dx, dy, distSq, SHIP.mass, railed ? Infinity : ASTEROID.mass[asteroid.size], 0.6);
-  if (!railed) {
-    const speed = Math.hypot(asteroid.vx, asteroid.vy);
-    if (speed > ASTEROID.maxSpeed) {
-      asteroid.vx *= ASTEROID.maxSpeed / speed;
-      asteroid.vy *= ASTEROID.maxSpeed / speed;
-    }
-    asteroid.version++; // its motion changed; clients need the new trajectory
+  // Ramming a belt rock knocks it off its orbit; from then on it falls freely.
+  if (asteroid.orbit) releaseFromOrbit(asteroid);
+  const closing = bounce(ship, asteroid, dx, dy, distSq, SHIP.mass, ASTEROID.mass[asteroid.size], 0.6);
+  const speed = Math.hypot(asteroid.vx, asteroid.vy);
+  if (speed > ASTEROID.maxSpeed) {
+    asteroid.vx *= ASTEROID.maxSpeed / speed;
+    asteroid.vy *= ASTEROID.maxSpeed / speed;
   }
+  asteroid.version++; // its motion changed; clients need the new trajectory
   if (closing > 0 && ship.contactCooldown === 0) {
     ship.contactCooldown = SHIP.contactCooldown;
     const impact = impactScale(closing);
+    // A rock someone else just shoved into us counts as their hit.
+    const p = asteroid.pusher;
+    const shover = p && p !== ship && !p.dead && game.tick - asteroid.pushTick <= BLAST.creditWindow ? p : null;
     damageAsteroid(game, asteroid, SHIP.ramDamage * impact, ship);
-    damageShip(game, ship, ASTEROID.contactDamage[asteroid.size] * impact, null, KillCause.ASTEROID, asteroid.x, asteroid.y);
+    damageShip(game, ship, ASTEROID.contactDamage[asteroid.size] * impact, shover, KillCause.ASTEROID, asteroid.x, asteroid.y);
   }
+  asteroid.pusher = ship;
+  asteroid.pushTick = game.tick;
 }
 
 function hitShip(game, a, b, dx, dy, distSq) {

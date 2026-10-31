@@ -3,12 +3,16 @@ import { test } from 'node:test';
 import {
   AlienKind,
   Announce,
+  BodyKind,
   Button,
   EntityType,
+  FxKind,
   KillCause,
   PickupKind,
   Powerup,
   RemoveReason,
+  SNAPSHOT_INTERVAL,
+  ShipFlag,
   TICK_RATE,
 } from '../shared/constants.js';
 import { NO_ID } from '../shared/protocol.js';
@@ -18,13 +22,15 @@ import { awardScore, collectPickup, damageAlien, damageAsteroid, damageShip, kil
 import { Game } from '../server/game/Game.js';
 import { randomName, sanitizeName } from '../server/game/names.js';
 import { findOpenSpot, spawnAsteroid, spawnPickup } from '../server/game/spawning.js';
-import { createPlanet } from '../shared/gravity.js';
-import { generatePlanets, spawnOrbiter } from '../server/game/planets.js';
+import { pullAt, setPose } from '../shared/gravity.js';
+import { applyBlast } from '../server/game/abilities.js';
+import { generateSolarSystem, spawnOrbiter } from '../server/game/planets.js';
+import { commandTick } from '../server/game/ships.js';
 import { BotBrain, drawSkill } from '../server/game/bots.js';
 import { spawnAlien } from '../server/game/spawning.js';
 import { createRng } from '../shared/math.js';
-import { ASTEROID, MOTHERSHIP, PICKUP, PLANETS, REWARD, SHIP } from '../server/game/tuning.js';
-import { addShip, emptyGame, hold } from './helpers.js';
+import { ASTEROID, BLAST, MOTHERSHIP, PICKUP, PLANETS, REWARD, SHIP } from '../server/game/tuning.js';
+import { addShip, emptyGame, fixedBody, hold, orbitingBody } from './helpers.js';
 
 test('a new game seeds the asteroid field to its target mass', () => {
   const game = new Game({ seed: 5 });
@@ -348,25 +354,33 @@ test('entity types are consistent', () => {
 
 function planetGame(radius = 140, density = 1.5) {
   const game = emptyGame();
-  const planet = createPlanet(0, 3000, 3000, radius, density, 'Test');
+  const planet = fixedBody(0, 3000, 3000, radius, density);
   planet.spin = 1;
   game.planets = [planet];
   return { game, planet };
 }
 
-test('generated planets have one of each type and well-separated gravity wells', () => {
-  for (const seed of [1, 2, 3, 4, 5]) {
-    const planets = generatePlanets(createRng(seed));
-    assert.equal(planets.length, PLANETS.count);
-    const dense = planets.find((p) => p.density >= PLANETS.types[2].density[0]);
-    const giant = planets.find((p) => p.radius >= PLANETS.types[0].radius[0]);
-    assert.ok(dense && giant && dense.radius < giant.radius);
-    for (const a of planets) {
-      for (const b of planets) {
-        if (a === b) continue;
-        assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 0, 'distinct');
+test('the solar system: a fixed star and one planet of each type, on orbits whose wells never meet', () => {
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const bodies = generateSolarSystem(createRng(seed));
+    assert.deepEqual(bodies.map((b) => b.kind), [BodyKind.STAR, BodyKind.CORE, BodyKind.ROCK, BodyKind.GAS]);
+    assert.ok(bodies.every((b, i) => b.id === i));
+    const [star, core, rock, gas] = bodies;
+    assert.equal(star.orbit.radius, 0, 'the star stays put');
+    assert.ok(core.surfacePull > gas.surfacePull, 'the small core pulls hardest at its surface');
+    assert.ok(core.orbit.radius < rock.orbit.radius && rock.orbit.radius === gas.orbit.radius, 'core inside, the others share the outer orbit');
+    // Sample a whole outer period: no two wells ever overlap, and the system fits the torus.
+    for (let tick = 0; tick < PLANETS.outerPeriod; tick += 600) {
+      for (const b of bodies) setPose(b, tick);
+      for (const a of bodies) {
+        for (const b of bodies) {
+          if (a.id >= b.id) continue;
+          assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > a.range + b.range, `${a.name} and ${b.name} wells apart at ${tick}`);
+        }
       }
     }
+    const reach = Math.max(...bodies.map((b) => b.orbit.radius + b.range));
+    assert.ok(reach < 4096, 'never closer to itself across the seam than to the star');
   }
 });
 
@@ -382,8 +396,8 @@ test('planets block shots: a ship hiding behind one takes no damage', () => {
 
 test('crashing into a planet hurts, landing does not, and a crash can kill', () => {
   const { game, planet } = planetGame();
-  const lander = addShip(game, 'Lander', planet.x + planet.radius + 40, planet.y);
-  hold(game, lander.player, 0, 180); // fall gently and settle
+  const lander = addShip(game, 'Lander', planet.x + planet.radius + 24, planet.y);
+  hold(game, lander.player, 0, 180); // a short drop: touch down gently and settle
   assert.equal(lander.ship.hp, lander.ship.maxHp);
   const diver = addShip(game, 'Diver', planet.x - planet.radius - 200, planet.y, 0);
   diver.ship.hp = 10;
@@ -404,17 +418,20 @@ test('belt rocks follow their orbits exactly and are only sent once', () => {
   assert.equal(rock.version, version, 'no re-sends: clients compute the orbit themselves');
 });
 
-test('ships bounce off belt rocks without knocking them out of orbit', () => {
+test('ramming a belt rock knocks it off its orbit; from then on it falls freely', () => {
   const { game, planet } = planetGame();
   const rock = spawnOrbiter(game, planet, 2, false);
-  const radius = rock.orbit.radius;
   const { player, ship } = addShip(game, 'Rammer', rock.x + 120, rock.y);
   game.rebuildGrid();
   ship.vx = rock.vx - 500;
   ship.vy = rock.vy;
+  const version = rock.version;
   hold(game, player, 0, 20);
   assert.ok(ship.hp < ship.maxHp, 'the collision happened');
-  assert.ok(Math.abs(Math.hypot(rock.x - planet.x, rock.y - planet.y) - radius) < 1e-6, 'still on its orbit');
+  assert.equal(rock.orbit, null, 'released from its orbit');
+  assert.ok(rock.version > version, 'clients are sent its new path');
+  hold(game, player, 0, 2);
+  assert.equal(rock.streamed, true, 'and it is streamed while it falls inside the well');
 });
 
 test('shooting a belt rock splits it into rocks on neighbouring orbits', () => {
@@ -453,6 +470,158 @@ test('players, asteroids and aliens never spawn inside gravity wells', () => {
     const spot = findOpenSpot(game, 900, 24, true);
     assert.ok(Math.hypot(spot.x - planet.x, spot.y - planet.y) > planet.range, 'outside the well');
   }
+});
+
+test('rocks and the star: the star burns ships and swallows rocks', () => {
+  const game = emptyGame();
+  const star = fixedBody(0, 4000, 4000, 200, 0.64, BodyKind.STAR, 'Sol');
+  game.planets = [star];
+  const { player, ship } = addShip(game, 'Icarus', 4000 + 200 + 30, 4000, Math.PI);
+  game.clearOutbox();
+  hold(game, player, 0, TICK_RATE * 3);
+  assert.equal(player.ship, null, 'burned up');
+  assert.equal(game.outbox.kills.at(-1).cause, KillCause.STAR);
+  const rock = spawnAsteroid(game, 2, 4000 + 200 + 60, 4000, -50, 0);
+  for (let i = 0; i < TICK_RATE * 2 && !rock.dead; i++) game.step();
+  assert.ok(rock.dead && rock.removeReason === RemoveReason.DESTROYED);
+});
+
+test('ships land on a moving planet and ride along with it, unharmed', () => {
+  const game = emptyGame();
+  const planet = orbitingBody(0, 4000, 4000, 1500, TICK_RATE * 120, 140, 1.2);
+  game.planets = [planet];
+  setPose(planet, game.tick + 1);
+  const { player, ship } = addShip(game, 'Lander', planet.x + 140 + 22, planet.y);
+  ship.vx = planet.vx;
+  ship.vy = planet.vy;
+  hold(game, player, 0, TICK_RATE * 3);
+  const start = { x: planet.x, y: planet.y };
+  hold(game, player, 0, TICK_RATE * 4);
+  assert.ok(Math.hypot(planet.x - start.x, planet.y - start.y) > 150, 'the planet moved on');
+  assert.ok(Math.abs(Math.hypot(ship.x - planet.x, ship.y - planet.y) - 140 - ship.radius) < 1, 'the ship is still on its surface');
+  assert.equal(ship.hp, ship.maxHp, 'a gentle landing does no damage');
+});
+
+test('orbit lock on the server: L locks, the ship is flagged, and a collision knocks it loose', () => {
+  const { game, planet } = planetGame();
+  const r = planet.radius + 150;
+  const { player, ship } = addShip(game, 'Orbiter', planet.x + r, planet.y);
+  ship.vy = Math.sqrt(pullAt(planet, r) * r);
+  hold(game, player, Button.LOCK, 1);
+  hold(game, player, 0, TICK_RATE * 2);
+  assert.equal(ship.lockBody, 0);
+  assert.ok(ship.flags & ShipFlag.LOCKED);
+  assert.ok(Math.abs(Math.hypot(ship.x - planet.x, ship.y - planet.y) - r) < 1e-6);
+  const rock = spawnAsteroid(game, 1, ship.x + ship.vx * 0.2, ship.y + ship.vy * 0.2, 0, 0);
+  game.rebuildGrid();
+  hold(game, player, 0, 30);
+  assert.ok(rock.dead || rock.version > 0, 'the ship hit the rock');
+  assert.equal(ship.lockBody, -1, 'knocked out of the lock');
+});
+
+test('the kinetic blast shoves what is in its cone, knocks belt rocks loose and is replicated once', () => {
+  const { game, planet } = planetGame();
+  const { player, ship } = addShip(game, 'Blaster', planet.x - planet.radius - 360, planet.y, 0); // facing the planet
+  const ahead = spawnAsteroid(game, 1, ship.x + 150, ship.y, 0, 0);
+  const behind = spawnAsteroid(game, 1, ship.x - 150, ship.y, 0, 0);
+  const wide = spawnAsteroid(game, 1, ship.x, ship.y + 150, 0, 0); // 90° off the nose
+  const belt = spawnOrbiter(game, planet, 2, false);
+  Object.assign(belt, { x: ship.x + 300, y: ship.y + 20 }); // just inside the range
+  game.rebuildGrid();
+  assert.ok(applyBlast(game, ship) >= 2);
+  assert.ok(ahead.vx > 300, 'pushed hard up close');
+  assert.ok(ahead.pusher === ship && ahead.version > 0);
+  assert.equal(behind.vx, 0, 'nothing behind the ship is touched');
+  assert.equal(wide.vy, 0, 'nor outside the cone');
+  assert.equal(belt.orbit, null, 'belt rocks are knocked off their orbits');
+  assert.ok(belt.vx > 0);
+  assert.ok(Math.hypot(belt.vx, belt.vy) <= ASTEROID.maxSpeed + 1e-9);
+  assert.equal(game.fx.length, 1);
+  assert.equal(game.fx[0].kind, FxKind.BLAST);
+  for (let i = 0; i < SNAPSHOT_INTERVAL; i++) game.step();
+  assert.equal(game.fx.length, 0, 'effects live for exactly one snapshot interval');
+
+  // Through the input path: P costs energy and pushes the ship back.
+  const energy = ship.energy;
+  ship.vx = 0;
+  hold(game, player, Button.BLAST, 1);
+  assert.ok(ship.energy < energy && ship.vx < 0, 'recoil');
+});
+
+test('shoving a ship into a planet credits the blaster with the kill', () => {
+  const { game, planet } = planetGame();
+  const victim = addShip(game, 'Victim', planet.x - planet.radius - 60, planet.y, 0);
+  const bully = addShip(game, 'Bully', planet.x - planet.radius - 200, planet.y, 0);
+  victim.ship.hp = 5;
+  game.clearOutbox();
+  applyBlast(game, bully.ship);
+  assert.ok(victim.ship.vx > 200, 'shoved towards the planet');
+  for (let i = 0; i < 60 && victim.player.ship; i++) {
+    game.queueInput(victim.player, victim.player.lastInputSeq + 1, 0, 0);
+    game.queueInput(bully.player, bully.player.lastInputSeq + 1, Button.BRAKE, 0);
+    game.step();
+  }
+  assert.equal(victim.player.ship, null, 'crashed');
+  const kill = game.outbox.kills.find((k) => k.victimId === victim.player.id);
+  assert.equal(kill.cause, KillCause.PLANET);
+  assert.equal(kill.killerId, bully.player.id);
+});
+
+test('a shoved rock that hits someone counts as the shover’s hit', () => {
+  const game = emptyGame();
+  const shover = addShip(game, 'Shover', 1000, 1000, 0);
+  const target = addShip(game, 'Target', 1500, 1000, Math.PI);
+  target.ship.hp = 3;
+  const rock = spawnAsteroid(game, 2, 1150, 1000, 0, 0);
+  game.rebuildGrid();
+  applyBlast(game, shover.ship);
+  assert.equal(rock.pusher, shover.ship);
+  game.clearOutbox();
+  for (let i = 0; i < 90 && target.player.ship; i++) {
+    game.queueInput(target.player, target.player.lastInputSeq + 1, 0, 0);
+    game.step();
+  }
+  const kill = game.outbox.kills.find((k) => k.victimId === target.player.id);
+  assert.ok(kill, 'the rock killed the target');
+  assert.equal(kill.cause, KillCause.ASTEROID);
+  assert.equal(kill.killerId, shover.player.id);
+});
+
+test('command time is anchored per life and re-anchored only on large or lasting drift', () => {
+  const game = emptyGame();
+  const player = game.addPlayer('Clock');
+  game.tick = 1000;
+  assert.equal(commandTick(game, player, 50), 1000, 'the first command anchors at world time');
+  assert.equal(player.timeOffset, 950);
+  game.tick = 1004;
+  assert.equal(commandTick(game, player, 51), 1001, 'a backlog keeps its own times');
+  game.tick = 1020;
+  assert.equal(commandTick(game, player, 52), 1020, 'drifting past the slack re-anchors');
+  assert.equal(player.timeOffset, 968);
+  // Small, steady drift is tolerated for a while, then corrected.
+  let seq = 53;
+  game.tick = 1021 + SHIP.timeSoftSlack + 1;
+  let reanchored = false;
+  for (let i = 0; i <= SHIP.timeDriftLimit + 1 && !reanchored; i++, seq++, game.tick++) {
+    reanchored = commandTick(game, player, seq) === game.tick;
+  }
+  assert.ok(reanchored, 'sustained drift is corrected');
+  assert.ok(seq - 53 > SHIP.timeDriftLimit, 'but only after the drift limit');
+});
+
+test('bots fly around the solar system without crashing into it', () => {
+  const game = new Game({ seed: 11, botTarget: 12 });
+  game.nextMothershipTick = Infinity;
+  let crashes = 0;
+  let blasts = 0;
+  for (let i = 0; i < TICK_RATE * 90; i++) {
+    game.step();
+    for (const k of game.outbox.kills) if (k.cause === KillCause.PLANET || k.cause === KillCause.STAR) crashes++;
+    blasts += game.fx.filter((f) => f.tick === game.tick).length;
+    game.clearOutbox();
+  }
+  assert.ok(crashes <= 2, `bots crashed ${crashes} times`);
+  assert.ok(blasts > 0, 'bots use the kinetic blast');
 });
 
 /* Bot skill and stealth -------------------------------------------------------- */

@@ -8,7 +8,7 @@ export class CommandQueue {
   constructor(capacity) {
     this.capacity = capacity;
     this.seqs = new Uint32Array(capacity);
-    this.buttons = new Uint8Array(capacity);
+    this.buttons = new Uint16Array(capacity);
     this.aims = new Float64Array(capacity);
     this.head = 0;
     this.size = 0;
@@ -52,6 +52,12 @@ export class Player {
     this.credits = 0; // commands the ship may still process; refilled one per tick
     this.lastInputSeq = 0;
     this.ackSeq = 0; // last command applied to the ship
+    // Command time: command `seq` simulates world tick `seq + timeOffset`. Anchored
+    // when a ship starts taking commands and re-anchored only if it drifts too far,
+    // so the client can predict time-dependent physics (moving planets) exactly.
+    this.timeOffset = 0;
+    this.timeAnchored = false;
+    this.timeDrift = 0; // consecutive commands run noticeably off world time
     this.wantsSpawn = false;
     this.respawnTick = 0;
     this.deathTick = -1;

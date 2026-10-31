@@ -8,7 +8,8 @@
  *   - full records for new entities,
  *   - records for streamed entities (ships, aliens) every time,
  *   - records for predictable entities (asteroids, projectiles, pickups) only
- *     when their version changed.
+ *     when their version changed,
+ *   - nearby visual effects (blasts), except the viewer's own.
  * Keying by object rather than id keeps recycled ids unambiguous.
  */
 import { RemoveReason, VIEW_HEIGHT, VIEW_MARGIN, VIEW_WIDTH } from '../../shared/constants.js';
@@ -54,20 +55,15 @@ export function buildSnapshot(game, session, out, leader) {
     flags |= SnapFlag.SPECTATE;
   }
 
+  const hw = (VIEW_WIDTH * scale) / 2 + VIEW_MARGIN;
+  const hh = (VIEW_HEIGHT * scale) / 2 + VIEW_MARGIN;
   visible.length = 0;
-  game.grid.query(
-    cx,
-    cy,
-    (VIEW_WIDTH * scale) / 2 + VIEW_MARGIN,
-    (VIEW_HEIGHT * scale) / 2 + VIEW_MARGIN,
-    Mask.ALL,
-    visible,
-  );
+  game.grid.query(cx, cy, hw, hh, Mask.ALL, visible);
   const stamp = game.grid.stamp; // every entity returned by the query carries this stamp
 
   out.begin(game.tick, flags);
   if (ship) {
-    out.self(ship, player.ackSeq);
+    out.self(ship, player.ackSeq, player.timeOffset);
     if (flags & SnapFlag.STATS) {
       out.stats(ship);
       session.statsShip = ship;
@@ -102,6 +98,7 @@ export function buildSnapshot(game, session, out, leader) {
 
   out.events(player ? player.events : NO_EVENTS);
   if (player) player.events.length = 0;
+  out.effects(game.fx, viewerId, cx, cy, hw, hh);
   return out.finish();
 }
 

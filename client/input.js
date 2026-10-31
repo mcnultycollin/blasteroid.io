@@ -2,32 +2,38 @@
  * Keyboard, mouse and touch input, folded into one command per tick:
  * a Button bitmask plus an aim angle.
  *
- * Two steering styles coexist: classic rotate keys (A/D, arrows), or aiming
- * with the mouse, where the ship turns towards the cursor at its turn rate.
+ * Two steering styles coexist: classic rotate keys (arrows), or aiming with
+ * the mouse, where the ship turns towards the cursor at its turn rate.
  * Moving the mouse switches to aiming; pressing a rotate key switches back.
+ * W/A/S/D fire the ship's forward, lateral and reverse thrusters, so it can
+ * accelerate in any direction while the nose stays on target.
  */
 import { Button } from '../shared/constants.js';
 
 const KEY_BUTTONS = {
-  KeyW: Button.THRUST,
   ArrowUp: Button.THRUST,
-  KeyA: Button.LEFT,
   ArrowLeft: Button.LEFT,
-  KeyD: Button.RIGHT,
   ArrowRight: Button.RIGHT,
-  KeyS: Button.BRAKE,
   ArrowDown: Button.BRAKE,
+  KeyW: Button.THRUST,
+  KeyS: Button.BACK,
+  KeyA: Button.STRAFE_LEFT,
+  KeyD: Button.STRAFE_RIGHT,
+  KeyQ: Button.BRAKE,
+  KeyP: Button.BLAST,
   Space: Button.FIRE,
   ShiftLeft: Button.BOOST,
   ShiftRight: Button.BOOST,
 };
 const WEAPON_KEYS = { KeyZ: 0, KeyX: 1, KeyC: 2 };
+const TOUCH_HOLD = { blast: Button.BLAST, brake: Button.BRAKE }; // on-screen buttons held down by a finger
 const STICK_DEADZONE = 14; // px
 const STICK_BOOST = 85; // px: pushing the stick this far engages boost
 
 /**
  * `actions` callbacks: upgrade(stat), weapon(choiceIndex), respawn(),
- * toggleMute(), toggleStealth(), toggleDebug(), hudPress(x, y) -> true if the HUD consumed the press.
+ * toggleMute(), toggleStealth(), toggleDebug(),
+ * hudPress(x, y) -> null, or the HUD action under the press ({type: ...}).
  */
 export class Input {
   constructor(canvas, actions) {
@@ -42,6 +48,8 @@ export class Input {
     this.touchMode = false;
     this.stick = { id: -1, ox: 0, oy: 0, x: 0, y: 0 };
     this.fireTouch = -1;
+    this.touchHeld = new Map(); // pointer id -> Button bit, for fingers on on-screen buttons
+    this.lockPressed = false; // orbit lock toggles once per press, so it rides on exactly one command
     // Output of sample()
     this.buttons = 0;
     this.aim = 0;
@@ -61,6 +69,8 @@ export class Input {
     this.mouseButtons = 0;
     this.stick.id = -1;
     this.fireTouch = -1;
+    this.touchHeld.clear();
+    this.lockPressed = false;
   }
 
   onKey(e, down) {
@@ -77,7 +87,9 @@ export class Input {
       return;
     }
     if (!down || e.repeat) return;
-    if (e.code.startsWith('Digit')) {
+    if (e.code === 'KeyL') {
+      if (this.enabled) this.lockPressed = true;
+    } else if (e.code.startsWith('Digit')) {
       const n = Number(e.code.slice(5));
       if (n >= 1 && n <= 8) this.actions.upgrade(n - 1);
     } else if (e.code in WEAPON_KEYS) {
@@ -97,7 +109,12 @@ export class Input {
   onPointerDown(e) {
     if (e.pointerType === 'touch') {
       this.touchMode = true;
-      if (this.actions.hudPress(e.clientX, e.clientY)) return;
+      const action = this.actions.hudPress(e.clientX, e.clientY);
+      if (action) {
+        if (action.type in TOUCH_HOLD) this.touchHeld.set(e.pointerId, TOUCH_HOLD[action.type]);
+        else if (action.type === 'lock') this.lockPressed = true;
+        return;
+      }
       if (e.clientX < innerWidth / 2 && this.stick.id === -1) {
         this.stick.id = e.pointerId;
         this.stick.ox = this.stick.x = e.clientX;
@@ -131,6 +148,7 @@ export class Input {
     if (e.pointerType === 'touch') {
       if (e.pointerId === this.stick.id) this.stick.id = -1;
       if (e.pointerId === this.fireTouch) this.fireTouch = -1;
+      this.touchHeld.delete(e.pointerId);
       return;
     }
     if (e.button === 0) this.mouseButtons &= ~Button.FIRE;
@@ -163,6 +181,11 @@ export class Input {
       if ((buttons & (Button.LEFT | Button.RIGHT)) === 0) buttons |= Button.AIM;
     }
     if (this.fireTouch !== -1) buttons |= Button.FIRE;
+    for (const bit of this.touchHeld.values()) buttons |= bit;
+    if (this.lockPressed) {
+      buttons |= Button.LOCK;
+      this.lockPressed = false;
+    }
     this.buttons = buttons;
     this.aim = aim;
   }

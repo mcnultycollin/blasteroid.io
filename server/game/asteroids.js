@@ -7,7 +7,7 @@
  *     until they crash or escape (streamed while inside the well).
  */
 import { RemoveReason } from '../../shared/constants.js';
-import { insidePlanet, orbitState, stepBallistic } from '../../shared/gravity.js';
+import { insideBody, orbitState, stepBallistic } from '../../shared/gravity.js';
 import { findOpenSpot, randomVelocity, spawnAsteroid } from './spawning.js';
 import { ASTEROID } from './tuning.js';
 
@@ -26,8 +26,8 @@ export function updateAsteroids(game) {
       a.streamed = inWell; // clients switch between streaming and straight-line extrapolation
       a.version++;
     }
-    if (inWell && insidePlanet(a.x, a.y, a.radius, planets)) {
-      a.dead = true; // shattered on the surface
+    if (inWell && insideBody(a.x, a.y, a.radius, planets)) {
+      a.dead = true; // shattered on the surface, or swallowed by the star
       a.removeReason = RemoveReason.DESTROYED;
     }
   }

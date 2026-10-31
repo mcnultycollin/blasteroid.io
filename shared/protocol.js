@@ -17,7 +17,7 @@ import {
   SNAPSHOT_INTERVAL,
   WORLD_SIZE,
 } from './constants.js';
-import { TAU, clamp, normalizeAngle } from './math.js';
+import { TAU, clamp, normalizeAngle, wrapDelta } from './math.js';
 import { STAT_COUNT } from './stats.js';
 
 export const ClientMsg = Object.freeze({ JOIN: 1, INPUT: 2, UPGRADE: 3, WEAPON: 4, PING: 5, STEALTH: 6 });
@@ -121,6 +121,13 @@ export class BinaryWriter {
     return this;
   }
 
+  i32(v) {
+    this.ensure(4);
+    this.view.setInt32(this.pos, v | 0);
+    this.pos += 4;
+    return this;
+  }
+
   f64(v) {
     this.ensure(8);
     this.view.setFloat64(this.pos, v);
@@ -186,6 +193,12 @@ export class BinaryReader {
     return v;
   }
 
+  i32() {
+    const v = this.view.getInt32(this.pos);
+    this.pos += 4;
+    return v;
+  }
+
   f64() {
     const v = this.view.getFloat64(this.pos);
     this.pos += 8;
@@ -207,9 +220,9 @@ export function encodeJoin(w, name) {
   return w.reset().u8(ClientMsg.JOIN).u8(PROTOCOL_VERSION).str(name).finish();
 }
 
-/** One input command. The count byte leaves room for batching later. */
+/** One input command: Button bits (u16) and a quantised aim angle. The count byte leaves room for batching. */
 export function encodeInput(w, seq, buttons, aimQ) {
-  return w.reset().u8(ClientMsg.INPUT).u32(seq).u8(1).u8(buttons).u16(aimQ).finish();
+  return w.reset().u8(ClientMsg.INPUT).u32(seq).u8(1).u16(buttons).u16(aimQ).finish();
 }
 
 export function encodeUpgrade(w, stat) {
@@ -231,17 +244,30 @@ export function encodeStealth(w) {
 
 /* Server -> client: small messages ------------------------------------------ */
 
-/** Includes the room's planets (they never move, so clients learn them once) and Feature bits. */
-export function encodeWelcome(w, tick, roomId, planets, features) {
-  w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(features).u8(planets.length);
-  for (const p of planets) w.f64(p.x).f64(p.y).f64(p.radius).f64(p.density).str(p.name);
+/**
+ * Includes the room's star and planets with their orbits (bodies move on
+ * rails, so clients learn them once and compute positions themselves) and
+ * Feature bits.
+ */
+export function encodeWelcome(w, tick, roomId, bodies, features) {
+  w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(features).u8(bodies.length);
+  for (const b of bodies) {
+    const o = b.orbit;
+    w.u8(b.kind).f64(b.radius).f64(b.density).str(b.name).f64(o.cx).f64(o.cy).f64(o.radius).f64(o.phase).f64(o.omega);
+  }
   return w.finish();
 }
 
 export function readWelcome(r) {
-  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), features: r.u8(), planets: [] };
+  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), features: r.u8(), bodies: [] };
   for (let n = r.u8(); n > 0; n--) {
-    welcome.planets.push({ x: r.f64(), y: r.f64(), radius: r.f64(), density: r.f64(), name: r.str() });
+    welcome.bodies.push({
+      kind: r.u8(),
+      radius: r.f64(),
+      density: r.f64(),
+      name: r.str(),
+      orbit: { cx: r.f64(), cy: r.f64(), radius: r.f64(), phase: r.f64(), omega: r.f64() },
+    });
   }
   return welcome;
 }
@@ -351,7 +377,8 @@ export function encodeKick(w, reason) {
  * [SPECTATE]  u16 entity id, u16 x, u16 y: camera target while not playing
  * u16  removal count, then { u16 id, u8 RemoveReason, [u16 collector id if COLLECTED] }
  * u16  entity count,  then { u8 EntityType, u16 id, payload }
- * u8   event count,   then { u8 EventKind, payload }
+ * u8   event count,   then { u8 EventKind, payload }      (this player's feedback)
+ * u8   effect count,  then { u8 FxKind, u16 x, u16 y, u16 angle, u16 source }  (nearby visuals)
  *
  * Entity records are creates when the client does not know the id yet and
  * updates otherwise. Ships and aliens are streamed every snapshot; asteroids,
@@ -371,9 +398,14 @@ export class SnapshotWriter {
     this.w.reset().u8(ServerMsg.SNAPSHOT).u32(tick).u8(flags);
   }
 
-  self(ship, ackSeq) {
-    this.w
-      .u32(ackSeq)
+  /**
+   * The player's own ship at full precision, with everything prediction needs:
+   * `timeOffset` maps command sequence numbers to the tick each command runs
+   * at (moving bodies and orbit locks depend on time), plus the orbit lock.
+   */
+  self(ship, ackSeq, timeOffset) {
+    const w = this.w;
+    w.u32(ackSeq)
       .u16(ship.id)
       .f64(ship.x)
       .f64(ship.y)
@@ -383,9 +415,13 @@ export class SnapshotWriter {
       .u16(ship.energy)
       .u8(ship.cooldown)
       .u8(ship.boostLock)
+      .u8(ship.blastCooldown)
       .u16(Math.ceil(ship.hp))
       .u16(Math.ceil(ship.shield))
-      .u8(ship.flags);
+      .u16(ship.flags)
+      .i32(timeOffset)
+      .u8(ship.lockBody + 1);
+    if (ship.lockBody >= 0) w.f64(ship.lockRadius).f64(ship.lockPhase).u32(ship.lockEpoch).f64(ship.lockOmega).u8(ship.lockDir < 0 ? 1 : 0);
   }
 
   stats(ship) {
@@ -430,7 +466,7 @@ export class SnapshotWriter {
           .i16(qVel(e.vx))
           .i16(qVel(e.vy))
           .u8(qFrac(e.hp, e.maxHp))
-          .u8(e.flags)
+          .u16(e.flags)
           .u8(e.level)
           .u8(e.weapon);
         break;
@@ -500,6 +536,25 @@ export class SnapshotWriter {
     }
   }
 
+  /**
+   * Visual effects (e.g. blasts) inside the box around (cx, cy), skipping the
+   * viewer's own, which their client already predicted.
+   */
+  effects(list, viewerShipId, cx, cy, hw, hh) {
+    const w = this.w;
+    const countAt = w.pos;
+    let n = 0;
+    w.u8(0);
+    for (let i = 0; i < list.length && n < 255; i++) {
+      const fx = list[i];
+      if (fx.sourceId === viewerShipId) continue;
+      if (Math.abs(wrapDelta(fx.x - cx, WORLD_SIZE)) > hw || Math.abs(wrapDelta(fx.y - cy, WORLD_SIZE)) > hh) continue;
+      w.u8(fx.kind).u16(qPos(fx.x)).u16(qPos(fx.y)).u16(qAngle(fx.angle)).u16(fx.sourceId);
+      n++;
+    }
+    w.view.setUint8(countAt, n);
+  }
+
   finish() {
     return this.w.finish();
   }
@@ -516,7 +571,7 @@ export function readEntity(type, r, o) {
       o.vx = dqVel(r.i16());
       o.vy = dqVel(r.i16());
       o.hpFrac = r.u8() / 255;
-      o.flags = r.u8();
+      o.flags = r.u16();
       o.level = r.u8();
       o.weapon = r.u8();
       break;
@@ -587,9 +642,19 @@ function readSelf(r, o) {
   o.energy = r.u16();
   o.cooldown = r.u8();
   o.boostLock = r.u8();
+  o.blastCooldown = r.u8();
   o.hp = r.u16();
   o.shield = r.u16();
-  o.flags = r.u8();
+  o.flags = r.u16();
+  o.timeOffset = r.i32();
+  o.lockBody = r.u8() - 1;
+  if (o.lockBody >= 0) {
+    o.lockRadius = r.f64();
+    o.lockPhase = r.f64();
+    o.lockEpoch = r.u32();
+    o.lockOmega = r.f64();
+    o.lockDir = r.u8() === 1 ? -1 : 1;
+  }
   return o;
 }
 
@@ -632,7 +697,8 @@ function readEvent(kind, r) {
 /**
  * Decodes a snapshot (type byte already consumed) into callbacks on `sink`:
  *   begin(tick), self(s), stats(s), spectate(id, x, y), remove(id, reason, collectorId),
- *   entity(type, id, reader) -> must call readEntity(type, reader, target), event(ev), end()
+ *   entity(type, id, reader) -> must call readEntity(type, reader, target), event(ev),
+ *   effect(kind, x, y, angle, sourceId), end()
  * `self` and `stats` objects are reused between calls.
  */
 export function readSnapshot(r, sink, scratch = { self: {}, stats: {} }) {
@@ -652,5 +718,6 @@ export function readSnapshot(r, sink, scratch = { self: {}, stats: {} }) {
     sink.entity(type, r.u16(), r);
   }
   for (let n = r.u8(); n > 0; n--) sink.event(readEvent(r.u8(), r));
+  for (let n = r.u8(); n > 0; n--) sink.effect(r.u8(), dqPos(r.u16()), dqPos(r.u16()), dqAngle(r.u16()), r.u16());
   sink.end();
 }

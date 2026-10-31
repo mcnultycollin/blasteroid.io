@@ -7,11 +7,14 @@
  *    interpolated between two received snapshots.
  *  - presentTick: the tick at which the server will process the command we
  *    are sending now. Our own ship lives here (it is predicted), and so do
- *    asteroids, pickups and our own projectiles. Those move in straight lines,
- *    so they can be extrapolated exactly to any time, which keeps our shots
- *    and the rocks they hit consistent on screen.
+ *    the star and planets, asteroids, pickups and our own projectiles. Those
+ *    move predictably, so they can be computed for any time, which keeps our
+ *    shots and the rocks they hit consistent on screen.
  *  - Other players' projectiles start in renderTick, so they leave the
  *    shooter's muzzle, then catch up to presentTick over a few frames.
+ *  - Ships and aliens inside a gravity well are carried along with its body
+ *    from renderTick to presentTick, so a pilot landed on a moving planet is
+ *    drawn on its surface rather than where the planet was a moment ago.
  */
 import {
   ASTEROID_RADIUS,
@@ -21,7 +24,16 @@ import {
   TICK_RATE,
   WORLD_SIZE,
 } from '../shared/constants.js';
-import { createPlanet, insidePlanet, orbitAngularSpeed, orbitState, stepBallistic } from '../shared/gravity.js';
+import {
+  createBody,
+  dominantBody,
+  insideBody,
+  orbitAngularSpeed,
+  orbitState,
+  poseBodies,
+  setPose,
+  stepBallistic,
+} from '../shared/gravity.js';
 import { TAU, clamp, createRng, hash32, lerpAngle, wrap, wrapDelta, wrapLerp } from '../shared/math.js';
 import { NO_ID, readEntity, readSnapshot } from '../shared/protocol.js';
 
@@ -31,6 +43,8 @@ const MAX_EXTRAPOLATION = 8; // ticks to coast past the newest sample before fre
 const CATCH_UP_TICKS = 12; // remote projectiles converge onto the present over this long
 const CLOCK_WINDOW = 60; // snapshot arrivals used to estimate latency and jitter
 const GHOST_TIMEOUT = 45; // ticks an unconfirmed predicted projectile may live
+const POSE_CACHE = 64; // ticks of body poses kept for extrapolating falling rocks
+const CARRY_DEPTH = 0.3; // carrying along with a body ramps up over this outer share of its well
 
 /** Estimates the server tick from snapshot arrival times. */
 class ServerClock {
@@ -166,7 +180,8 @@ function asteroidShape(seed, radius) {
 export class ClientWorld {
   /**
    * `events` callbacks: self(s, tick), stats(s, tick), spectate(id, x, y),
-   * created(e), removed(e, reason, collectorId), event(ev), damaged(e).
+   * created(e), removed(e, reason, collectorId), event(ev), damaged(e),
+   * effect(kind, x, y, angle, sourceId).
    */
   constructor(events) {
     this.events = events;
@@ -174,7 +189,9 @@ export class ClientWorld {
     this.roster = new Map(); // playerId -> { name, hue }
     this.ghosts = [];
     this.clock = new ServerClock();
-    this.planets = [];
+    this.planets = []; // the star and planets, posed for presentTick each frame
+    this.renderBodies = []; // the same bodies posed for renderTick
+    this.poseCache = [];
     this.tick = 0; // tick of the snapshot being decoded / last decoded
     this.myShipId = NO_ID;
     this.snapshotCount = 0;
@@ -184,7 +201,7 @@ export class ClientWorld {
   }
 
   reset() {
-    this.planets = [];
+    this.setBodies([]);
     this.entities.clear();
     this.roster.clear();
     this.ghosts.length = 0;
@@ -192,9 +209,24 @@ export class ClientWorld {
     this.myShipId = NO_ID;
   }
 
-  /** Planets arrive once, in the welcome message; they never move. */
-  setPlanets(list) {
-    this.planets = list.map((p, i) => createPlanet(i, p.x, p.y, p.radius, p.density, p.name));
+  /**
+   * The star and planets arrive once, in the welcome message. They follow
+   * fixed orbits, so their position at any tick is computed locally.
+   */
+  setBodies(list) {
+    this.planets = list.map((b, i) => createBody(i, b.kind, b.radius, b.density, b.name, b.orbit));
+    this.renderBodies = [];
+    this.poseCache = Array.from({ length: POSE_CACHE }, () => ({ tick: NaN, bodies: [] }));
+  }
+
+  /** The bodies posed for a whole tick (cached; used to extrapolate falling rocks). */
+  bodiesAt(tick) {
+    const slot = this.poseCache[((tick % POSE_CACHE) + POSE_CACHE) % POSE_CACHE];
+    if (slot.tick !== tick) {
+      poseBodies(this.planets, tick, slot.bodies);
+      slot.tick = tick;
+    }
+    return slot.bodies;
   }
 
   /* Roster ------------------------------------------------------------------ */
@@ -283,6 +315,10 @@ export class ClientWorld {
     this.events.event(ev);
   }
 
+  effect(kind, x, y, angle, sourceId) {
+    this.events.effect(kind, x, y, angle, sourceId);
+  }
+
   prepareAsteroidMotion(e) {
     if (e.orbit) {
       const planet = this.planets[e.orbit.planet];
@@ -362,11 +398,14 @@ export class ClientWorld {
 
   /** Computes render positions (rx, ry, ra) and visibility for every entity. */
   updatePresentation(renderTick, presentTick) {
+    for (const body of this.planets) setPose(body, presentTick);
+    poseBodies(this.planets, renderTick, this.renderBodies);
     for (const e of this.entities.values()) {
       switch (e.type) {
         case EntityType.SHIP:
         case EntityType.ALIEN:
           if (!interpolate(e, renderTick)) this.netStats.extrapolations++;
+          this.carryWithBody(e);
           break;
         case EntityType.ASTEROID:
           if (e.orbit) {
@@ -392,7 +431,7 @@ export class ClientWorld {
           }
           extrapolate(e, t);
           if (e.own) this.predictPlanetImpact(e);
-          e.visible = t >= e.birth && t - e.t0 <= e.life && !e.predictedHit && !insidePlanet(e.rx, e.ry, 0, this.planets);
+          e.visible = t >= e.birth && t - e.t0 <= e.life && !e.predictedHit && !insideBody(e.rx, e.ry, 0, this.planets);
           break;
         }
       }
@@ -410,9 +449,24 @@ export class ClientWorld {
     }
   }
 
-  /** Our shots hitting a planet are predictable (planets never move): show the impact immediately. */
+  /**
+   * Moves a streamed entity, interpolated at renderTick, along with the body
+   * whose well it is in, to where that body is at presentTick. The carry
+   * fades in over the outer part of the well, so nothing pops at its edge.
+   */
+  carryWithBody(e) {
+    const from = dominantBody(e.rx, e.ry, this.renderBodies);
+    if (!from) return;
+    const to = this.planets[from.id];
+    const d = Math.hypot(wrapDelta(e.rx - from.x, WORLD_SIZE), wrapDelta(e.ry - from.y, WORLD_SIZE));
+    const k = clamp((from.range - d) / (from.range * CARRY_DEPTH), 0, 1);
+    e.rx = wrap(e.rx + wrapDelta(to.x - from.x, WORLD_SIZE) * k, WORLD_SIZE);
+    e.ry = wrap(e.ry + wrapDelta(to.y - from.y, WORLD_SIZE) * k, WORLD_SIZE);
+  }
+
+  /** Our shots hitting a body are predictable (bodies move on rails): show the impact immediately. */
   predictPlanetImpact(e) {
-    if (!e.predictedHit && insidePlanet(e.rx, e.ry, 0, this.planets)) {
+    if (!e.predictedHit && insideBody(e.rx, e.ry, 0, this.planets)) {
       e.predictedHit = true;
       this.events.predictedImpact(e.rx, e.ry);
     }
@@ -420,15 +474,16 @@ export class ClientWorld {
 
   /**
    * Advances a falling asteroid's gravity simulation to `t`, from the last
-   * streamed state, using the same stepBallistic() as the server. Fresh states
-   * arrive every snapshot, so the horizon is only a few ticks.
+   * streamed state, using the same stepBallistic() as the server, with the
+   * bodies posed for each tick. Fresh states arrive every snapshot, so the
+   * horizon is only a few ticks.
    */
   extrapolateBallistic(e, t) {
     const sim = e.sim;
     const target = Math.floor(t);
     for (let steps = 0; e.simTick < target && steps < 60; steps++) {
-      stepBallistic(sim, this.planets);
       e.simTick++;
+      stepBallistic(sim, this.bodiesAt(e.simTick));
     }
     const dt = (t - e.simTick) * TICK_DT;
     e.rx = wrap(sim.x + sim.vx * dt, WORLD_SIZE);

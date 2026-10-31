@@ -4,7 +4,7 @@
  * tuning (spawn rates, rewards, AI) lives in server/game/tuning.js.
  */
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /* Timing ------------------------------------------------------------------ */
 
@@ -15,7 +15,7 @@ export const SNAPSHOT_INTERVAL = 2; // ticks between snapshots (30 Hz)
 
 /* World ------------------------------------------------------------------- */
 
-export const WORLD_SIZE = 6144; // square torus: leaving one edge enters the opposite one
+export const WORLD_SIZE = 8192; // square torus: leaving one edge enters the opposite one
 export const VIEW_WIDTH = 1920; // world units visible at base zoom. Fixed so that a bigger
 export const VIEW_HEIGHT = 1080; // monitor never grants extra vision.
 export const VIEW_MARGIN = 260; // replication border beyond the visible area
@@ -47,9 +47,13 @@ export const ShipFlag = Object.freeze({
   RAPID: 32,
   OVERDRIVE: 64,
   STEALTH: 128, // hidden from bots and aliens (a development tool)
+  LOCKED: 256, // orbit-locked around a body
 });
 
 export const ASTEROID_RADIUS = [18, 36, 62]; // indexed by size class: small, medium, large
+
+/** Celestial bodies: one star, orbited by planets of each kind. */
+export const BodyKind = Object.freeze({ STAR: 0, GAS: 1, ROCK: 2, CORE: 3 });
 
 export const AlienKind = Object.freeze({ SAUCER: 0, HUNTER: 1, MOTHERSHIP: 2 });
 export const ALIEN_RADIUS = [24, 15, 84];
@@ -76,18 +80,24 @@ export const POWERUP_SECONDS = [20, 10, 10];
 /* Input ------------------------------------------------------------------- */
 
 export const Button = Object.freeze({
-  THRUST: 1,
-  LEFT: 2,
+  THRUST: 1, // main engine (forward)
+  LEFT: 2, // rotate
   RIGHT: 4,
-  BRAKE: 8,
+  BRAKE: 8, // retro-thrust against the current motion
   FIRE: 16,
   BOOST: 32,
   AIM: 64, // turn towards the command's aim angle instead of using LEFT/RIGHT
+  BACK: 128, // reverse thruster
+  STRAFE_LEFT: 256, // lateral thrusters
+  STRAFE_RIGHT: 512,
+  BLAST: 1024, // kinetic push wave
+  LOCK: 2048, // toggle orbit lock (sent once per key press)
 });
+export const BUTTON_MASK = 0x0fff;
 
 /* Messages ---------------------------------------------------------------- */
 
-export const KillCause = Object.freeze({ SHIP: 0, ASTEROID: 1, ALIEN: 2, MOTHERSHIP: 3, RAM: 4, PLANET: 5 });
+export const KillCause = Object.freeze({ SHIP: 0, ASTEROID: 1, ALIEN: 2, MOTHERSHIP: 3, RAM: 4, PLANET: 5, STAR: 6 });
 export const Announce = Object.freeze({
   MOTHERSHIP_INBOUND: 1,
   MOTHERSHIP_DESTROYED: 2,
@@ -98,3 +108,9 @@ export const EventKind = Object.freeze({ SCORE: 1, HIT: 2, DAMAGE: 3 });
 export const MarkerKind = Object.freeze({ LEADER: 1, MOTHERSHIP: 2 });
 /** Optional server features, announced in the welcome message. */
 export const Feature = Object.freeze({ DEV_TOOLS: 1 });
+/** Visual effects broadcast to nearby clients. */
+export const FxKind = Object.freeze({ BLAST: 1 });
+
+/** The kinetic blast's cone (shared so clients draw exactly what the server applies). */
+export const BLAST_RANGE = 380; // to the target's surface
+export const BLAST_HALF_ANGLE = 0.6; // radians either side of the nose

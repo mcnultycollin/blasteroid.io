@@ -57,7 +57,15 @@ export class Ship extends Entity {
     this.energy = 0;
     this.cooldown = 0;
     this.boostLock = 0;
-    this.impact = 0; // planet impact speed from the last physics step
+    this.blastCooldown = 0;
+    this.lockBody = -1; // orbit lock (see shared/physics.js)
+    this.lockRadius = 0;
+    this.lockPhase = 0;
+    this.lockEpoch = 0;
+    this.lockDir = 1;
+    this.lockOmega = 0;
+    this.impact = 0; // surface impact speed from the last physics step
+    this.contactBody = -1;
     // Combat
     this.hp = 0;
     this.maxHp = 0;
@@ -97,6 +105,8 @@ export class Asteroid extends Entity {
     this.size = size;
     this.hp = ASTEROID.hp[size];
     this.orbit = null; // circular orbit around a planet (see shared/gravity.js), or null when free
+    this.pusher = null; // ship that last rammed or blasted it, credited if it hits someone soon after
+    this.pushTick = 0;
   }
 }
 

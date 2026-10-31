@@ -12,6 +12,7 @@
     <link rel="modulepreload" href="/client/net.js" />
     <link rel="modulepreload" href="/client/world.js" />
     <link rel="modulepreload" href="/client/prediction.js" />
+    <link rel="modulepreload" href="/client/flightpath.js" />
     <link rel="modulepreload" href="/client/renderer.js" />
     <link rel="modulepreload" href="/client/hud.js" />
     <link rel="modulepreload" href="/client/effects.js" />
@@ -22,6 +23,7 @@
     <link rel="modulepreload" href="/shared/math.js" />
     <link rel="modulepreload" href="/shared/stats.js" />
     <link rel="modulepreload" href="/shared/physics.js" />
+    <link rel="modulepreload" href="/shared/gravity.js" />
     <link rel="modulepreload" href="/shared/protocol.js" />
   </head>
   <body>
@@ -37,10 +39,12 @@
         </form>
         <p id="status" class="status" aria-live="polite">Connecting…</p>
         <div class="controls">
-          <div><kbd>Mouse</kbd> aim &nbsp; <kbd>Click</kbd> / <kbd>Space</kbd> fire</div>
-          <div><kbd>W</kbd> / <kbd>Right click</kbd> thrust &nbsp; <kbd>S</kbd> brake &nbsp; <kbd>Shift</kbd> boost</div>
-          <div><kbd>A</kbd> <kbd>D</kbd> rotate (classic) &nbsp; <kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
-          <div class="touch-hint">Touch: drag left side to steer, hold right side to fire</div>
+          <div><kbd>Mouse</kbd> aim &nbsp; <kbd>Click</kbd> / <kbd>Space</kbd> fire &nbsp; <kbd>Shift</kbd> boost</div>
+          <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> thrusters: forward, left, back, right</div>
+          <div><kbd>↑</kbd> thrust &nbsp; <kbd>←</kbd> <kbd>→</kbd> rotate &nbsp; <kbd>↓</kbd> / <kbd>Q</kbd> brake</div>
+          <div><kbd>P</kbd> kinetic blast &nbsp; <kbd>L</kbd> lock orbit (in a gravity well)</div>
+          <div><kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
+          <div class="touch-hint">Touch: drag left side to steer and thrust, hold right side to fire; BLAST, LOCK and BRAKE buttons on the right</div>
           <div id="dev-hint" class="hidden"><kbd>I</kbd> hide from bots (testing) &nbsp; <kbd>F3</kbd> netgraph</div>
         </div>
         <p class="footer"><a href="/">About Blasteroid.io</a></p>
