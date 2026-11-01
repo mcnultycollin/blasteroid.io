@@ -52,12 +52,17 @@ export class Ship extends Entity {
     super(EntityType.SHIP, SHIP_RADIUS);
     this.player = player;
     this.playerId = player.id;
+    this.team = player.team;
+    this.shipClass = player.shipClass;
+    this.perks = 0; // team perks from outposts, folded into the derived stats
     // Prediction state (see shared/physics.js)
     this.angle = 0;
     this.energy = 0;
     this.cooldown = 0;
     this.boostLock = 0;
     this.blastCooldown = 0;
+    this.abilityCooldown = 0;
+    this.abilityTime = 0;
     this.lockBody = -1; // orbit lock (see shared/physics.js)
     this.lockRadius = 0;
     this.lockPhase = 0;
@@ -84,7 +89,8 @@ export class Ship extends Entity {
     this.weapon = Weapon.BLASTER;
     this.weaponChoice = false;
     this.powerups = new Uint16Array(POWERUP_COUNT);
-    this.st = deriveStats(this.statLevels, this.weapon, false, false);
+    this.st = deriveStats(this.statLevels, this.weapon, false, false, {}, this.shipClass, 0);
+    this.radius = this.st.radius; // hull size depends on the class
     this.statsVersion = 0; // bumped whenever anything in the STATS block changes
     this.rank = 0; // leaderboard position, refreshed once per second
     // Presentation and bookkeeping
@@ -96,6 +102,10 @@ export class Ship extends Entity {
     this.lastActiveTick = 0;
     this.lastButtons = 0;
     this.lastAim = 0;
+    this.healCredit = 0; // fractional score owed for healing teammates
+    this.hidden = false; // inside a nebula and not given away recently
+    this.revealedUntil = 0; // tick until which firing keeps the ship visible
+    this.auraTick = 0;
   }
 }
 

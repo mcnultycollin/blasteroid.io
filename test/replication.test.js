@@ -15,7 +15,7 @@ const writer = new SnapshotWriter(new BinaryWriter(1024));
 function snapshot(game, session, leader = null) {
   const r = new BinaryReader(buildSnapshot(game, session, writer, leader));
   r.u8();
-  const out = { records: [], removals: [], events: [], effects: [], self: null, stats: null, spectate: null };
+  const out = { records: [], removals: [], events: [], effects: [], fields: [], self: null, stats: null, spectate: null, world: null };
   readSnapshot(r, {
     begin: (tick) => (out.tick = tick),
     self: (s) => (out.self = { ...s }),
@@ -25,6 +25,8 @@ function snapshot(game, session, leader = null) {
     entity: (type, id, reader) => out.records.push({ type, id, ...readEntity(type, reader, {}) }),
     event: (ev) => out.events.push(ev),
     effect: (kind, x, y, angle, sourceId) => out.effects.push({ kind, x, y, angle, sourceId }),
+    world: (m) => (out.world = structuredClone(m)),
+    fields: (list) => (out.fields = list.map((f) => ({ ...f }))),
     end: () => {},
   });
   assert.equal(r.remaining, 0);
@@ -175,4 +177,34 @@ test('blasts are replicated to nearby viewers, except the one who fired', async 
   assert.equal(seen[0].sourceId, me.ship.id);
   assert.ok(Math.abs(seen[0].x - me.ship.x) < 0.2);
   assert.equal(snapshot(game, distant).effects.length, 0, 'out of view');
+});
+
+test('known ships get compact motion records; a level or weapon change sends the full record again', async () => {
+  const { SHIP_MOTION } = await import('../shared/protocol.js');
+  const { game, other, session } = setup();
+  const wireTypes = () => {
+    const r = new BinaryReader(buildSnapshot(game, session, writer, null));
+    r.u8();
+    const types = [];
+    readSnapshot(r, {
+      begin() {}, self() {}, stats() {}, spectate() {}, world() {}, remove() {}, event() {}, effect() {}, fields() {}, end() {},
+      entity: (type, id, reader) => {
+        const rec = readEntity(type, reader, {});
+        if (id === other.ship.id) types.push({ type, rec });
+      },
+    });
+    return types[0];
+  };
+  const first = wireTypes();
+  assert.equal(first.type, EntityType.SHIP, 'full record the first time');
+  assert.equal(first.rec.playerId, other.player.id);
+  game.step();
+  const second = wireTypes();
+  assert.equal(second.type, SHIP_MOTION, 'motion only afterwards');
+  assert.equal(second.rec.playerId, undefined);
+  assert.ok(Math.abs(second.rec.x - other.ship.x) < 0.2);
+  other.ship.level = 7;
+  const third = wireTypes();
+  assert.equal(third.type, EntityType.SHIP, 'full again after levelling up');
+  assert.equal(third.rec.level, 7);
 });

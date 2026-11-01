@@ -11,9 +11,9 @@
  * slingshots keep their momentum.
  */
 import { Button, MAX_SPEED, SHIP_NOSE, TICK_DT, WORLD_SIZE } from './constants.js';
-import { applyGravity, collideBodies, orbitAngularSpeed, pullAt } from './gravity.js';
+import { applyGravity, collideBodies, dominantBody, orbitAngularSpeed, pullAt } from './gravity.js';
 import { angleDiff, normalizeAngle, wrap, wrapDelta } from './math.js';
-import { WEAPONS } from './stats.js';
+import { Ability, WEAPONS } from './stats.js';
 
 export const StepResult = Object.freeze({
   FIRED: 1,
@@ -25,6 +25,7 @@ export const StepResult = Object.freeze({
   LOCKED: 64, // entered an orbit lock
   UNLOCKED: 128, // left an orbit lock
   LOCK_FAILED: 256, // asked to lock with no body in range
+  ABILITY: 512, // activated the class ability this step
 });
 
 /** Minimum altitude above a body's surface for an orbit lock. */
@@ -50,6 +51,8 @@ export function createShipState() {
     cooldown: 0,
     boostLock: 0,
     blastCooldown: 0,
+    abilityCooldown: 0,
+    abilityTime: 0, // ticks left of an active ability (dash, ram drive)
     lockBody: -1,
     lockRadius: 0,
     lockPhase: 0,
@@ -71,6 +74,8 @@ export function copyShipState(to, from) {
   to.cooldown = from.cooldown;
   to.boostLock = from.boostLock;
   to.blastCooldown = from.blastCooldown;
+  to.abilityCooldown = from.abilityCooldown;
+  to.abilityTime = from.abilityTime;
   to.lockBody = from.lockBody;
   to.lockRadius = from.lockRadius;
   to.lockPhase = from.lockPhase;
@@ -84,11 +89,16 @@ export function copyShipState(to, from) {
 
 /**
  * Advances a ship by one tick of input. `bodies` must be posed for `tick`,
- * the ship's command time. Returns a StepResult bitmask: the caller spawns
- * projectiles on FIRED, applies the blast's push on BLAST and crash damage
- * from `s.impact` on IMPACT.
+ * the ship's command time; `fields` are the temporary gravity fields acting
+ * on this ship at that tick (see fieldsAt). Returns a StepResult bitmask: the
+ * caller spawns projectiles on FIRED, applies the blast's push on BLAST, the
+ * class ability's effect on ABILITY and crash damage from `s.impact` on IMPACT.
+ *
+ * Abilities that move the ship are simulated here, so they are predicted:
+ * the Fighter's afterburner kicks the ship towards its held thrusters; the
+ * Breaker's ram drive charges forward and lifts the speed limit while it lasts.
  */
-export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0) {
+export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fields = NO_BODIES) {
   let result = 0;
 
   const turn = st.turnRate * TICK_DT;
@@ -139,8 +149,26 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0) {
     result |= StepResult.BLAST;
   }
 
-  // Firing a thruster, braking or the blast's recoil all break an orbit lock.
-  if (s.lockBody >= 0 && (forward !== 0 || lateral !== 0 || braking || blasting)) {
+  if (s.abilityCooldown > 0) s.abilityCooldown--;
+  if (s.abilityTime > 0) s.abilityTime--;
+  const activated = (buttons & Button.ABILITY) !== 0 && s.abilityCooldown === 0 && s.energy >= st.abilityCost;
+  if (activated) {
+    s.abilityCooldown = st.abilityCooldown;
+    s.abilityTime = st.abilityDuration;
+    s.energy -= st.abilityCost;
+    result |= StepResult.ABILITY;
+  }
+  const dash = activated && st.ability === Ability.DASH;
+  const charge = activated && st.ability === Ability.RAM;
+  const rushing = st.ability === Ability.RAM && s.abilityTime > 0;
+  if (rushing && forward < st.thrust) forward = st.thrust; // the ram drive burns on its own
+
+  // Thrusters, the brake, the blast's recoil, a dash or a charge all break an
+  // orbit lock, and so does an enemy singularity's pull.
+  if (
+    s.lockBody >= 0 &&
+    (forward !== 0 || lateral !== 0 || braking || blasting || dash || charge || (fields.length > 0 && dominantBody(s.x, s.y, fields)))
+  ) {
     s.lockBody = -1;
     result |= StepResult.UNLOCKED;
   }
@@ -156,7 +184,7 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0) {
       const before = s.vx * s.vx + s.vy * s.vy;
       s.vx += (ca * forward - sa * lateral) * TICK_DT;
       s.vy += (sa * forward + ca * lateral) * TICK_DT;
-      const cap = boosting ? st.boostSpeed : st.maxSpeed;
+      const cap = rushing ? st.rushSpeed : boosting ? st.boostSpeed : st.maxSpeed;
       const after = s.vx * s.vx + s.vy * s.vy;
       if (after > cap * cap && after > before) {
         const k = Math.max(cap, Math.sqrt(before)) / Math.sqrt(after); // steer freely, but no faster
@@ -168,6 +196,19 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0) {
       s.vx -= ca * st.blastRecoil;
       s.vy -= sa * st.blastRecoil;
     }
+    if (dash) {
+      // Towards the held thrusters (forward if none), past the cruise limit like a slingshot.
+      let f = (buttons & Button.THRUST ? 1 : 0) - (buttons & Button.BACK ? 1 : 0);
+      const l = (buttons & Button.STRAFE_RIGHT ? 1 : 0) - (buttons & Button.STRAFE_LEFT ? 1 : 0);
+      if (f === 0 && l === 0) f = 1;
+      const k = st.abilityImpulse / Math.sqrt(f * f + l * l);
+      s.vx += (ca * f - sa * l) * k;
+      s.vy += (sa * f + ca * l) * k;
+    }
+    if (charge) {
+      s.vx += ca * st.abilityImpulse;
+      s.vy += sa * st.abilityImpulse;
+    }
     if (braking) {
       result |= StepResult.BRAKE;
       const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
@@ -178,6 +219,7 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0) {
       }
     }
     if (bodies.length > 0) applyGravity(s, bodies);
+    if (fields.length > 0) applyGravity(s, fields);
 
     const speedSq = s.vx * s.vx + s.vy * s.vy;
     if (speedSq > MAX_SPEED * MAX_SPEED) {

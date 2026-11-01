@@ -12,11 +12,11 @@ import {
   TICK_RATE,
   WORLD_SIZE,
 } from '../../shared/constants.js';
-import { isStar, poseBodies } from '../../shared/gravity.js';
+import { fieldsAt, isStar, poseBodies } from '../../shared/gravity.js';
 import { clamp, wrap, wrapDelta } from '../../shared/math.js';
 import { StepResult, computeShots, stepShip } from '../../shared/physics.js';
-import { STAT_COUNT, STAT_MAX, WEAPON_CHOICES, Weapon } from '../../shared/stats.js';
-import { applyBlast, breakLock } from './abilities.js';
+import { STAT_COUNT, STAT_MAX, ShipClass, WEAPON_CHOICES, Weapon } from '../../shared/stats.js';
+import { applyBlast, breakLock, ramming, useAbility } from './abilities.js';
 import {
   awardScore,
   collectPickup,
@@ -28,7 +28,8 @@ import {
 import { Mask } from './entities.js';
 import { releaseFromOrbit } from './planets.js';
 import { spawnBullet } from './spawning.js';
-import { ASTEROID, BLAST, PICKUP, PLANETS, REWARD, SHIP } from './tuning.js';
+import { allies } from './teams.js';
+import { ABILITY, ASTEROID, BLAST, NEBULA, PICKUP, PLANETS, REWARD, SHIP } from './tuning.js';
 
 const shots = [];
 const nearby = [];
@@ -38,6 +39,7 @@ const CONTACTS = Mask.SHIP | Mask.ASTEROID | Mask.ALIEN | Mask.PICKUP;
 /* Input --------------------------------------------------------------------- */
 
 const poseScratch = []; // bodies posed at a command's own tick
+const fieldScratch = []; // enemy singularities acting at a command's own tick
 
 /**
  * Applies queued input commands. Each command advances its ship by exactly
@@ -65,7 +67,8 @@ export function processShipInputs(game) {
       player.ackSeq = seq;
       const tick = commandTick(game, player, seq);
       const bodies = tick === game.tick ? game.planets : poseBodies(game.planets, tick, poseScratch);
-      applyCommand(game, ship, buttons, aim, seq, bodies, tick);
+      const fields = game.fields.length > 0 ? fieldsAt(game.fields, tick, ship.team, ship.id, fieldScratch) : game.fields;
+      applyCommand(game, ship, buttons, aim, seq, bodies, tick, fields);
       if (ship.dead) break;
     }
   }
@@ -91,8 +94,8 @@ export function commandTick(game, player, seq) {
   return tick;
 }
 
-function applyCommand(game, ship, buttons, aim, seq, bodies, tick) {
-  const result = stepShip(ship, buttons, aim, ship.st, bodies, tick);
+function applyCommand(game, ship, buttons, aim, seq, bodies, tick, fields) {
+  const result = stepShip(ship, buttons, aim, ship.st, bodies, tick, fields);
   ship.thrusting = (result & StepResult.THRUST) !== 0;
   ship.boosting = (result & StepResult.BOOST) !== 0;
   ship.braking = (result & StepResult.BRAKE) !== 0;
@@ -102,7 +105,9 @@ function applyCommand(game, ship, buttons, aim, seq, bodies, tick) {
   ship.lastAim = aim;
   if (result & StepResult.IMPACT) touchBody(game, ship);
   if (ship.dead) return;
+  if (result & (StepResult.FIRED | StepResult.BLAST | StepResult.ABILITY)) ship.revealedUntil = game.tick + NEBULA.revealAfterFire;
   if (result & StepResult.BLAST) applyBlast(game, ship);
+  if (result & StepResult.ABILITY) useAbility(game, ship, tick);
   if (result & StepResult.FIRED) fireWeapon(game, ship, seq);
 }
 
@@ -151,7 +156,9 @@ export function updateShips(game) {
       (ship.powerups[Powerup.RAPID] > 0 ? ShipFlag.RAPID : 0) |
       (ship.powerups[Powerup.OVERDRIVE] > 0 ? ShipFlag.OVERDRIVE : 0) |
       (ship.player.stealth ? ShipFlag.STEALTH : 0) |
-      (ship.lockBody >= 0 ? ShipFlag.LOCKED : 0);
+      (ship.lockBody >= 0 ? ShipFlag.LOCKED : 0) |
+      (ramming(ship) ? ShipFlag.ABILITY : 0) |
+      (ship.hidden ? ShipFlag.HIDDEN : 0);
   }
 }
 
@@ -250,11 +257,16 @@ function bounce(a, b, dx, dy, distSq, massA, massB, restitution) {
 }
 
 const impactScale = (closing) => clamp(closing / 250, 0.4, 2);
+const massOf = (ship) => (ramming(ship) ? ABILITY.ramMass : ship.st.mass);
 
+/**
+ * A ship hitting a rock. Breakers shrug off rocks and hit them harder; a
+ * Breaker's ram drive shatters any rock it ploughs into and takes no damage.
+ */
 function hitAsteroid(game, ship, asteroid, dx, dy, distSq) {
   // Ramming a belt rock knocks it off its orbit; from then on it falls freely.
   if (asteroid.orbit) releaseFromOrbit(asteroid);
-  const closing = bounce(ship, asteroid, dx, dy, distSq, SHIP.mass, ASTEROID.mass[asteroid.size], 0.6);
+  const closing = bounce(ship, asteroid, dx, dy, distSq, massOf(ship), ASTEROID.mass[asteroid.size], 0.6);
   const speed = Math.hypot(asteroid.vx, asteroid.vy);
   if (speed > ASTEROID.maxSpeed) {
     asteroid.vx *= ASTEROID.maxSpeed / speed;
@@ -264,28 +276,36 @@ function hitAsteroid(game, ship, asteroid, dx, dy, distSq) {
   if (closing > 0 && ship.contactCooldown === 0) {
     ship.contactCooldown = SHIP.contactCooldown;
     const impact = impactScale(closing);
-    // A rock someone else just shoved into us counts as their hit.
-    const p = asteroid.pusher;
-    const shover = p && p !== ship && !p.dead && game.tick - asteroid.pushTick <= BLAST.creditWindow ? p : null;
-    damageAsteroid(game, asteroid, SHIP.ramDamage * impact, ship);
-    damageShip(game, ship, ASTEROID.contactDamage[asteroid.size] * impact, shover, KillCause.ASTEROID, asteroid.x, asteroid.y);
+    const breaker = ship.shipClass === ShipClass.BREAKER;
+    if (ramming(ship)) {
+      damageAsteroid(game, asteroid, ABILITY.ramSmash, ship);
+    } else {
+      // A rock an enemy just shoved into us counts as their hit.
+      const p = asteroid.pusher;
+      const shover = p && p !== ship && !p.dead && !allies(p, ship) && game.tick - asteroid.pushTick <= BLAST.creditWindow ? p : null;
+      damageAsteroid(game, asteroid, SHIP.ramDamage * impact * (breaker ? ABILITY.breakerRamBonus : 1), ship);
+      const contact = ASTEROID.contactDamage[asteroid.size] * impact * (breaker ? ABILITY.breakerRockShield : 1);
+      damageShip(game, ship, contact, shover, KillCause.ASTEROID, asteroid.x, asteroid.y);
+    }
   }
   asteroid.pusher = ship;
   asteroid.pushTick = game.tick;
 }
 
+/** Ships colliding: teammates just bounce; enemies hurt each other, and a ram drive hurts a lot. */
 function hitShip(game, a, b, dx, dy, distSq) {
-  const closing = bounce(a, b, dx, dy, distSq, SHIP.mass, SHIP.mass, 0.8);
-  if (closing > 0 && a.contactCooldown === 0 && b.contactCooldown === 0) {
-    a.contactCooldown = b.contactCooldown = SHIP.contactCooldown;
-    const damage = SHIP.shipRamDamage * impactScale(closing);
-    damageShip(game, a, damage, b, KillCause.RAM, b.x, b.y);
-    damageShip(game, b, damage, a, KillCause.RAM, a.x, a.y);
-  }
+  const closing = bounce(a, b, dx, dy, distSq, massOf(a), massOf(b), 0.8);
+  if (closing <= 0 || allies(a, b) || a.contactCooldown > 0 || b.contactCooldown > 0) return;
+  a.contactCooldown = b.contactCooldown = SHIP.contactCooldown;
+  const impact = impactScale(closing);
+  const toB = ramming(a) ? ABILITY.ramShipDamage * impact : SHIP.shipRamDamage * impact;
+  const toA = ramming(b) ? ABILITY.ramShipDamage * impact : SHIP.shipRamDamage * impact;
+  damageShip(game, a, ramming(a) ? toA * 0.25 : toA, b, KillCause.RAM, b.x, b.y);
+  damageShip(game, b, ramming(b) ? toB * 0.25 : toB, a, KillCause.RAM, a.x, a.y);
 }
 
 function hitAlien(game, ship, alien, dx, dy, distSq) {
-  const closing = bounce(ship, alien, dx, dy, distSq, SHIP.mass, alien.radius / 12, 0.7);
+  const closing = bounce(ship, alien, dx, dy, distSq, massOf(ship), alien.radius / 12, 0.7);
   if (closing > 0 && ship.contactCooldown === 0) {
     ship.contactCooldown = SHIP.contactCooldown;
     const impact = impactScale(closing);

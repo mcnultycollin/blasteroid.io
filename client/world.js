@@ -19,6 +19,7 @@
 import {
   ASTEROID_RADIUS,
   EntityType,
+  NO_TEAM,
   SNAPSHOT_INTERVAL,
   TICK_DT,
   TICK_RATE,
@@ -26,6 +27,7 @@ import {
 } from '../shared/constants.js';
 import {
   createBody,
+  createField,
   dominantBody,
   insideBody,
   orbitAngularSpeed,
@@ -34,8 +36,9 @@ import {
   setPose,
   stepBallistic,
 } from '../shared/gravity.js';
+import { SINGULARITY } from '../shared/stats.js';
 import { TAU, clamp, createRng, hash32, lerpAngle, wrap, wrapDelta, wrapLerp } from '../shared/math.js';
-import { NO_ID, readEntity, readSnapshot } from '../shared/protocol.js';
+import { NO_ID, SHIP_MOTION, readEntity, readSnapshot } from '../shared/protocol.js';
 
 const TICKS_PER_MS = TICK_RATE / 1000;
 const HISTORY = 16; // interpolation samples per streamed entity
@@ -44,6 +47,9 @@ const CATCH_UP_TICKS = 12; // remote projectiles converge onto the present over 
 const CLOCK_WINDOW = 60; // snapshot arrivals used to estimate latency and jitter
 const GHOST_TIMEOUT = 45; // ticks an unconfirmed predicted projectile may live
 const POSE_CACHE = 64; // ticks of body poses kept for extrapolating falling rocks
+/** Team colours (hues): Helios burns orange, Polaris glows ice blue. */
+export const TEAM_HUES = [28, 198];
+export const TEAM_NAMES = ['HELIOS', 'POLARIS'];
 const CARRY_DEPTH = 0.3; // carrying along with a body ramps up over this outer share of its well
 
 /** Estimates the server tick from snapshot arrival times. */
@@ -181,7 +187,7 @@ export class ClientWorld {
   /**
    * `events` callbacks: self(s, tick), stats(s, tick), spectate(id, x, y),
    * created(e), removed(e, reason, collectorId), event(ev), damaged(e),
-   * effect(kind, x, y, angle, sourceId).
+   * effect(kind, x, y, angle, sourceId), match(m, previous).
    */
   constructor(events) {
     this.events = events;
@@ -192,6 +198,11 @@ export class ClientWorld {
     this.planets = []; // the star and planets, posed for presentTick each frame
     this.renderBodies = []; // the same bodies posed for renderTick
     this.poseCache = [];
+    this.nebulae = []; // {x, y, radius, seed}, from the welcome message
+    this.outposts = []; // {planet, perk, name}, from the welcome message
+    this.match = null; // teams, rounds, outposts and flares (see SnapshotWriter.world)
+    this.gravityFields = []; // singularities in view (shared with prediction)
+    this.rockFields = [];
     this.tick = 0; // tick of the snapshot being decoded / last decoded
     this.myShipId = NO_ID;
     this.snapshotCount = 0;
@@ -202,6 +213,9 @@ export class ClientWorld {
 
   reset() {
     this.setBodies([]);
+    this.setTerrain([], []);
+    this.match = null;
+    this.gravityFields.length = 0;
     this.entities.clear();
     this.roster.clear();
     this.ghosts.length = 0;
@@ -219,6 +233,19 @@ export class ClientWorld {
     this.poseCache = Array.from({ length: POSE_CACHE }, () => ({ tick: NaN, bodies: [] }));
   }
 
+  setTerrain(nebulae, outposts) {
+    this.nebulae = nebulae;
+    this.outposts = outposts;
+  }
+
+  /** Active singularities at `tick`, which pull loose rocks of every side. */
+  fieldsForRocks(tick) {
+    const out = this.rockFields;
+    out.length = 0;
+    for (const f of this.gravityFields) if (tick >= f.born && tick < f.expires) out.push(f);
+    return out;
+  }
+
   /** The bodies posed for a whole tick (cached; used to extrapolate falling rocks). */
   bodiesAt(tick) {
     const slot = this.poseCache[((tick % POSE_CACHE) + POSE_CACHE) % POSE_CACHE];
@@ -231,18 +258,28 @@ export class ClientWorld {
 
   /* Roster ------------------------------------------------------------------ */
 
-  setPlayer(id, name) {
+  setPlayer(id, name, team = NO_TEAM, shipClass = 0) {
+    const hue = team === NO_TEAM ? (id * 137.508) % 360 : TEAM_HUES[team];
     const existing = this.roster.get(id);
-    if (existing) existing.name = name;
-    else this.roster.set(id, { name, hue: (id * 137.508) % 360 });
+    if (existing) Object.assign(existing, { name, team, shipClass, hue });
+    else this.roster.set(id, { name, team, shipClass, hue });
   }
 
   playerName(id) {
     return this.roster.get(id)?.name ?? '???';
   }
 
+  /** A player's colour: their team's in team games, their own otherwise. */
   playerHue(id) {
     return this.roster.get(id)?.hue ?? (id * 137.508) % 360;
+  }
+
+  playerTeam(id) {
+    return this.roster.get(id)?.team ?? NO_TEAM;
+  }
+
+  playerClass(id) {
+    return this.roster.get(id)?.shipClass ?? 0;
   }
 
   /* Snapshot decoding (sink interface for readSnapshot) ----------------------- */
@@ -278,12 +315,13 @@ export class ClientWorld {
     this.events.removed(e, reason, collectorId);
   }
 
-  entity(type, id, reader) {
+  entity(wireType, id, reader) {
+    const type = wireType === SHIP_MOTION ? EntityType.SHIP : wireType;
     let e = this.entities.get(id);
     const created = !e || e.type !== type;
     if (created) e = new ClientEntity(id, type, this.now);
     const previousHp = e.hpFrac;
-    readEntity(type, reader, e);
+    readEntity(wireType, reader, e);
     e.t0 = this.tick;
     if (e.hist) e.pushSample(this.tick, e.x, e.y, e.angle);
     if (type === EntityType.ASTEROID) this.prepareAsteroidMotion(e);
@@ -317,6 +355,37 @@ export class ClientWorld {
 
   effect(kind, x, y, angle, sourceId) {
     this.events.effect(kind, x, y, angle, sourceId);
+  }
+
+  world(m) {
+    const previous = this.match;
+    this.match = {
+      phase: m.phase,
+      phaseEnd: m.phaseEnd,
+      winner: m.winner,
+      scores: [...m.scores],
+      outposts: m.outposts.map((o) => ({ ...o })),
+      flare: m.flare ? { ...m.flare } : null,
+    };
+    this.events.match(this.match, previous);
+  }
+
+  /**
+   * The singularities in view, as gravity fields. Objects are kept per id so
+   * prediction and the flight-path preview see a stable list.
+   */
+  fields(list) {
+    const fields = this.gravityFields;
+    const old = new Map(fields.map((f) => [f.id, f]));
+    fields.length = 0;
+    for (const f of list) {
+      const known = old.get(f.id);
+      fields.push(
+        known && known.born === f.born
+          ? known
+          : createField(f.id, f.x, f.y, SINGULARITY.gm, SINGULARITY.range, SINGULARITY.core, f.born, f.expires, f.team, f.ownerId),
+      );
+    }
   }
 
   prepareAsteroidMotion(e) {
@@ -483,7 +552,7 @@ export class ClientWorld {
     const target = Math.floor(t);
     for (let steps = 0; e.simTick < target && steps < 60; steps++) {
       e.simTick++;
-      stepBallistic(sim, this.bodiesAt(e.simTick));
+      stepBallistic(sim, this.bodiesAt(e.simTick), this.gravityFields.length > 0 ? this.fieldsForRocks(e.simTick) : this.gravityFields);
     }
     const dt = (t - e.simTick) * TICK_DT;
     e.rx = wrap(sim.x + sim.vx * dt, WORLD_SIZE);

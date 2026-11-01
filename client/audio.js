@@ -193,6 +193,48 @@ export class Sound {
     this.tone(out, 'triangle', b, b, 0.12, 0.07);
   }
 
+  /** Class abilities: each has its own signature sound. */
+  ability(kind, x, y, mine) {
+    const out = this.output(mine ? 'ability-own' : `ability-${kind}`, 90, mine ? undefined : x, y, mine ? 0.28 : 0.2);
+    if (!out) return;
+    switch (kind) {
+      case 0: // afterburner: a fast rising whoosh
+        this.burst(out, 0.22, 900, 4500, 'bandpass');
+        break;
+      case 1: // ram drive: a deep roar
+        this.tone(out, 'sawtooth', 70, 140, 0.5);
+        this.burst(out, 0.5, 600, 120);
+        break;
+      case 2: // repair pulse: a bright chord
+        [523, 784, 1046].forEach((f, i) => this.tone(out, 'triangle', f, f * 1.01, 0.35, i * 0.04));
+        break;
+      default: // singularity: a falling hum that swallows itself
+        this.tone(out, 'sine', 220, 40, 0.9);
+        this.tone(out, 'square', 110, 30, 0.6);
+    }
+  }
+
+  /** Solar flare warning: a two-tone siren. */
+  flareWarning() {
+    const out = this.output('flare', 1500, undefined, undefined, 0.16);
+    if (!out) return;
+    for (let i = 0; i < 4; i++) this.tone(out, 'square', i % 2 ? 660 : 880, i % 2 ? 660 : 880, 0.18, i * 0.2);
+  }
+
+  /** The flare itself: a roaring burst of noise. */
+  flareBurn() {
+    const out = this.output('flare-burn', 1500, undefined, undefined, 0.3);
+    if (out) this.burst(out, 1.4, 3000, 200);
+  }
+
+  /** An outpost changing hands: rising for us, falling for them. */
+  capture(good) {
+    const out = this.output('capture', 400, undefined, undefined, 0.16);
+    if (!out) return;
+    const notes = good ? [523, 659, 784] : [523, 415, 330];
+    notes.forEach((f, i) => this.tone(out, 'square', f, f, 0.12, i * 0.09));
+  }
+
   /** A lock or ability that is not available right now. */
   denied() {
     const out = this.output('denied', 200, undefined, undefined, 0.1);

@@ -1,10 +1,12 @@
 /** Projectile movement and impact resolution. */
 import { EntityType, EventKind, KillCause, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
 import { segmentCircleHit, wrap, wrapDelta } from '../../shared/math.js';
-import { pushShip } from './abilities.js';
+import { ShipClass } from '../../shared/stats.js';
+import { healShip, pushShip } from './abilities.js';
 import { damageAlien, damageAsteroid, damageShip } from './combat.js';
 import { alienCause } from './ships.js';
-import { SHIP } from './tuning.js';
+import { allies } from './teams.js';
+import { ABILITY, SHIP } from './tuning.js';
 
 const nearby = [];
 
@@ -42,7 +44,7 @@ export function collideBullets(game) {
     let target = null;
     let first = 2;
     for (const t of nearby) {
-      if (t === b.owner) continue;
+      if (t === b.owner || (t.type === EntityType.SHIP && allies(t, b.owner) && !healable(b, t))) continue; // no friendly fire
       const hit = segmentCircleHit(px, py, sx, sy, t.x, t.y, t.radius + b.radius, WORLD_SIZE);
       if (hit >= 0 && hit < first) {
         first = hit;
@@ -65,6 +67,9 @@ export function collideBullets(game) {
   }
 }
 
+/** A Medic's shots repair damaged teammates instead of passing through them. */
+const healable = (b, target) => b.owner.shipClass === ShipClass.MEDIC && target.hp < target.maxHp;
+
 function resolveHit(game, b, target, x, y) {
   b.dead = true;
   b.removeReason = RemoveReason.HIT;
@@ -74,6 +79,10 @@ function resolveHit(game, b, target, x, y) {
   let dealt = 0;
   switch (target.type) {
     case EntityType.SHIP: {
+      if (allies(target, owner)) {
+        healShip(game, owner, target, b.damage * ABILITY.healShotScale);
+        return; // repairs are reported as HEAL events, not hits
+      }
       const cause = owner.type === EntityType.SHIP ? KillCause.SHIP : alienCause(owner);
       dealt = damageShip(game, target, b.damage, owner, cause, x - b.vx * 0.1, y - b.vy * 0.1);
       if (dealt > 0 && !target.dead) {

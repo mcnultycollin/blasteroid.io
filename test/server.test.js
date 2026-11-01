@@ -64,6 +64,9 @@ class TestClient {
         remove: () => {},
         entity: (t, id, reader) => readEntity(t, reader, {}),
         event: () => {},
+        effect: () => {},
+        world: (m) => (this.match = { ...m }),
+        fields: () => {},
         end: () => {},
       });
     }

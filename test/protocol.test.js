@@ -10,8 +10,10 @@ import {
   EventKind,
   FxKind,
   MarkerKind,
+  NO_TEAM,
   PickupKind,
   RemoveReason,
+  RoundPhase,
   WORLD_SIZE,
 } from '../shared/constants.js';
 import {
@@ -73,9 +75,9 @@ test('quantisation stays within its stated precision', () => {
 
 test('roster and leaderboard round-trip', () => {
   const w = new BinaryWriter();
-  let r = new BinaryReader(encodeRoster(w, [{ id: 3, name: 'Ace' }, { id: 9, name: 'Zed' }]));
+  let r = new BinaryReader(encodeRoster(w, [{ id: 3, name: 'Ace', team: 1, shipClass: 2 }, { id: 9, name: 'Zed', team: NO_TEAM, shipClass: 0 }]));
   assert.equal(r.u8(), ServerMsg.ROSTER);
-  assert.deepEqual(readRoster(r), [{ id: 3, name: 'Ace' }, { id: 9, name: 'Zed' }]);
+  assert.deepEqual(readRoster(r), [{ id: 3, name: 'Ace', team: 1, shipClass: 2 }, { id: 9, name: 'Zed', team: NO_TEAM, shipClass: 0 }]);
 
   r = new BinaryReader(encodeLeaderboard(w, 12, 4, [{ playerId: 3, score: 999 }], [{ kind: MarkerKind.LEADER, x: 100, y: 200 }]));
   assert.equal(r.u8(), ServerMsg.LEADERBOARD);
@@ -91,6 +93,7 @@ test('snapshot round-trips every section and entity type', () => {
   const ship = {
     id: 11, type: EntityType.SHIP, playerId: 4, x: 100.25, y: 6000.5, vx: -50.75, vy: 20, angle: 1.25,
     hp: 73.4, maxHp: 130, shield: 12.2, energy: 480, cooldown: 3, boostLock: 1, blastCooldown: 40, flags: 9 | 256,
+    abilityCooldown: 700, abilityTime: 12, shipClass: 3, perks: 5,
     lockBody: 1, lockRadius: 287.25, lockPhase: -2.5, lockEpoch: 123456, lockOmega: 0.41, lockDir: -1,
     score: 1234, kills: 2, level: 6, points: 1, statLevels: Uint8Array.from([1, 0, 2, 0, 3, 0, 0, 1]),
     weapon: 2, weaponChoice: true, powerups: Uint16Array.from([100, 0, 50]), spawnTick: 77,
@@ -115,10 +118,21 @@ test('snapshot round-trips every section and entity type', () => {
     { kind: FxKind.BLAST, x: 4000, y: 4000, angle: 0, sourceId: 13 }, // out of view: skipped
   ];
 
+  const match = {
+    phase: RoundPhase.INTERMISSION, phaseEnd: 98765, winner: 1, scores: [420, 1000],
+    outposts: [{ owner: 0, progress: -1, contested: false }, { owner: NO_TEAM, progress: 0.37, contested: true }],
+    flare: { angle: 2, halfWidth: 0.5, start: 1100, end: 1190 },
+  };
+  const fields = [
+    { id: 7, team: 1, ownerId: 12, x: dqPos(qPos(300)), y: dqPos(qPos(450)), born: 1001, expires: 1241, range: 470 },
+    { id: 8, team: 0, ownerId: 13, x: 5000, y: 5000, born: 1001, expires: 1241, range: 470 }, // out of view
+  ];
+
   const out = new SnapshotWriter(new BinaryWriter(16));
-  out.begin(1000, 1 | 2);
+  out.begin(1000, 1 | 2 | 8);
   out.self(ship, 555, -77);
   out.stats(ship);
+  out.world(match);
   out.beginList();
   out.removal(30, RemoveReason.DESTROYED, NO_ID);
   out.removal(31, RemoveReason.COLLECTED, 11);
@@ -128,6 +142,7 @@ test('snapshot round-trips every section and entity type', () => {
   out.endList();
   out.events(events);
   out.effects(effects, 11, 300, 600, 1100, 700); // viewer ship 11, camera at (300, 600)
+  out.fields(fields, 300, 600, 1100, 700);
   const bytes = out.finish();
 
   const got = { removals: [], entities: [], events: [], effects: [] };
@@ -142,6 +157,8 @@ test('snapshot round-trips every section and entity type', () => {
     entity: (type, id, reader) => got.entities.push({ type, id, ...readEntity(type, reader, {}) }),
     event: (ev) => got.events.push(ev),
     effect: (kind, x, y, angle, sourceId) => got.effects.push({ kind, x, y, angle, sourceId }),
+    world: (m) => (got.world = structuredClone(m)),
+    fields: (list) => (got.fields = list.map((f) => ({ ...f }))),
     end: () => (got.ended = true),
   });
   assert.equal(r.remaining, 0, 'decoder consumed exactly what the encoder wrote');
@@ -158,6 +175,19 @@ test('snapshot round-trips every section and entity type', () => {
     [got.self.lockBody, got.self.lockRadius, got.self.lockPhase, got.self.lockEpoch, got.self.lockOmega, got.self.lockDir],
     [1, 287.25, -2.5, 123456, 0.41, -1],
   );
+  assert.equal(got.self.abilityCooldown, 700);
+  assert.equal(got.self.abilityTime, 12);
+  assert.equal(got.stats.shipClass, 3);
+  assert.equal(got.stats.perks, 5);
+  assert.equal(got.world.phase, RoundPhase.INTERMISSION);
+  assert.equal(got.world.phaseEnd, 98765);
+  assert.equal(got.world.winner, 1);
+  assert.deepEqual(got.world.scores, [420, 1000]);
+  assert.deepEqual(got.world.outposts, [{ owner: 0, progress: -1, contested: false }, { owner: NO_TEAM, progress: 0.37, contested: true }]);
+  assert.equal(got.world.flare.start, 1100);
+  assert.equal(got.world.flare.end, 1190);
+  assert.ok(Math.abs(got.world.flare.angle - 2) < 1e-3 && Math.abs(got.world.flare.halfWidth - 0.5) < 1e-3);
+  assert.deepEqual(got.fields, [{ id: 7, team: 1, ownerId: 12, x: fields[0].x, y: fields[0].y, born: 1001, expires: 1241 }], 'exact snapped positions; out-of-view fields skipped');
   assert.equal(got.effects.length, 1);
   assert.equal(got.effects[0].sourceId, 12);
   assert.ok(Math.abs(got.effects[0].angle - 1.5) < 1e-3);
@@ -192,12 +222,18 @@ test('welcome carries the star and planets with their orbits at full precision',
     { kind: BodyKind.STAR, radius: 200, density: 0.64, name: 'Sol', orbit: { cx: 4096, cy: 4096, radius: 0, phase: 0, omega: 0 } },
     { kind: BodyKind.ROCK, radius: 151, density: 1.33, name: 'Orin II', orbit: { cx: 4096, cy: 4096, radius: 1966, phase: 2.25, omega: 0.000402 } },
   ];
-  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, bodies, 1));
+  const terrain = {
+    nebulae: [{ x: dqPos(qPos(1200)), y: dqPos(qPos(7000)), radius: 333, seed: 123456789 }],
+    outposts: [{ planet: 1, perk: 4, name: 'Orin Shipyard' }],
+  };
+  const r = new BinaryReader(encodeWelcome(new BinaryWriter(), 77, 3, bodies, 3, terrain));
   assert.equal(r.u8(), ServerMsg.WELCOME);
   const w = readWelcome(r);
   assert.equal(w.tick, 77);
-  assert.equal(w.features, 1);
+  assert.equal(w.features, 3);
   assert.deepEqual(w.bodies, bodies);
+  assert.deepEqual(w.nebulae, terrain.nebulae);
+  assert.deepEqual(w.outposts, terrain.outposts);
 });
 
 test('input commands carry 16 button bits', () => {
@@ -224,11 +260,12 @@ test('asteroid records carry orbits exactly, or positions for free and falling r
   out.endList();
   out.events([]);
   out.effects([], NO_ID, 0, 0, 0, 0);
+  out.fields([], 0, 0, 0, 0);
   const records = [];
   const r = new BinaryReader(out.finish());
   r.u8();
   readSnapshot(r, {
-    begin() {}, self() {}, stats() {}, spectate() {}, remove() {}, event() {}, effect() {}, end() {},
+    begin() {}, self() {}, stats() {}, spectate() {}, remove() {}, event() {}, effect() {}, world() {}, fields() {}, end() {},
     entity: (type, id, reader) => records.push(readEntity(type, reader, {})),
   });
   assert.deepEqual(records[0].orbit, { planet: 2, radius: 287, phase, epoch: 4000000, dir: -1, omega: 0 });

@@ -11,6 +11,7 @@
 import {
   EntityType,
   EventKind,
+  NO_TEAM,
   POWERUP_COUNT,
   PROTOCOL_VERSION,
   RemoveReason,
@@ -36,7 +37,7 @@ export const ServerMsg = Object.freeze({
   KICK: 11,
 });
 
-export const SnapFlag = Object.freeze({ SELF: 1, STATS: 2, SPECTATE: 4 });
+export const SnapFlag = Object.freeze({ SELF: 1, STATS: 2, SPECTATE: 4, WORLD: 8 });
 
 /** Sentinel for "no entity / no player". Ids are allocated in 1..0xfffe. */
 export const NO_ID = 0xffff;
@@ -48,6 +49,18 @@ const ASTEROID_SIZE_MASK = 0x03;
 const ASTEROID_ORBIT = 0x04; // on a circular orbit: sent once as orbit parameters
 const ASTEROID_BALLISTIC = 0x08; // loose inside a gravity well: streamed every snapshot
 const ASTEROID_RETROGRADE = 0x10; // orbit runs clockwise on screen
+/**
+ * Entity type byte flag: a ship update carrying only what changes every
+ * snapshot (motion, hull, flags). Its owner, level and weapon were sent with
+ * the full record and are re-sent only when they change.
+ */
+export const SHIP_MOTION = EntityType.SHIP | 0x80;
+const WIRE_NO_TEAM = 0xff;
+const wireTeam = (team) => (team === NO_TEAM ? WIRE_NO_TEAM : team);
+const readTeam = (r) => {
+  const t = r.u8();
+  return t === WIRE_NO_TEAM ? NO_TEAM : t;
+};
 
 /* Quantisation ------------------------------------------------------------ */
 
@@ -96,6 +109,13 @@ export class BinaryWriter {
   u8(v) {
     this.ensure(1);
     this.view.setUint8(this.pos, v);
+    this.pos += 1;
+    return this;
+  }
+
+  i8(v) {
+    this.ensure(1);
+    this.view.setInt8(this.pos, v);
     this.pos += 1;
     return this;
   }
@@ -175,6 +195,12 @@ export class BinaryReader {
     return v;
   }
 
+  i8() {
+    const v = this.view.getInt8(this.pos);
+    this.pos += 1;
+    return v;
+  }
+
   u16() {
     const v = this.view.getUint16(this.pos);
     this.pos += 2;
@@ -216,8 +242,9 @@ export class BinaryReader {
 
 /* Client -> server -------------------------------------------------------- */
 
-export function encodeJoin(w, name) {
-  return w.reset().u8(ClientMsg.JOIN).u8(PROTOCOL_VERSION).str(name).finish();
+/** Join (or respawn) as `shipClass` with `name`. */
+export function encodeJoin(w, name, shipClass = 0) {
+  return w.reset().u8(ClientMsg.JOIN).u8(PROTOCOL_VERSION).u8(shipClass).str(name).finish();
 }
 
 /** One input command: Button bits (u16) and a quantised aim angle. The count byte leaves room for batching. */
@@ -249,17 +276,23 @@ export function encodeStealth(w) {
  * rails, so clients learn them once and compute positions themselves) and
  * Feature bits.
  */
-export function encodeWelcome(w, tick, roomId, bodies, features) {
+export function encodeWelcome(w, tick, roomId, bodies, features, terrain = NO_TERRAIN) {
   w.reset().u8(ServerMsg.WELCOME).u8(PROTOCOL_VERSION).u32(tick).u16(roomId).u8(features).u8(bodies.length);
   for (const b of bodies) {
     const o = b.orbit;
     w.u8(b.kind).f64(b.radius).f64(b.density).str(b.name).f64(o.cx).f64(o.cy).f64(o.radius).f64(o.phase).f64(o.omega);
   }
+  w.u8(terrain.nebulae.length);
+  for (const n of terrain.nebulae) w.u16(qPos(n.x)).u16(qPos(n.y)).u16(Math.round(n.radius)).u32(n.seed);
+  w.u8(terrain.outposts.length);
+  for (const o of terrain.outposts) w.u8(o.planet).u8(o.perk).str(o.name);
   return w.finish();
 }
 
+const NO_TERRAIN = Object.freeze({ nebulae: [], outposts: [] });
+
 export function readWelcome(r) {
-  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), features: r.u8(), bodies: [] };
+  const welcome = { version: r.u8(), tick: r.u32(), roomId: r.u16(), features: r.u8(), bodies: [], nebulae: [], outposts: [] };
   for (let n = r.u8(); n > 0; n--) {
     welcome.bodies.push({
       kind: r.u8(),
@@ -269,6 +302,8 @@ export function readWelcome(r) {
       orbit: { cx: r.f64(), cy: r.f64(), radius: r.f64(), phase: r.f64(), omega: r.f64() },
     });
   }
+  for (let n = r.u8(); n > 0; n--) welcome.nebulae.push({ x: dqPos(r.u16()), y: dqPos(r.u16()), radius: r.u16(), seed: r.u32() });
+  for (let n = r.u8(); n > 0; n--) welcome.outposts.push({ planet: r.u8(), perk: r.u8(), name: r.str() });
   return welcome;
 }
 
@@ -276,16 +311,16 @@ export function encodeJoined(w, playerId) {
   return w.reset().u8(ServerMsg.JOINED).u16(playerId).finish();
 }
 
-/** Up to 255 players per message; callers chunk larger rosters. */
+/** Players' names, teams and ship classes. Up to 255 per message; callers chunk larger rosters. */
 export function encodeRoster(w, players) {
   w.reset().u8(ServerMsg.ROSTER).u8(players.length);
-  for (const p of players) w.u16(p.id).str(p.name);
+  for (const p of players) w.u16(p.id).str(p.name).u8(wireTeam(p.team ?? NO_TEAM)).u8(p.shipClass ?? 0);
   return w.finish();
 }
 
 export function readRoster(r) {
   const list = [];
-  for (let n = r.u8(); n > 0; n--) list.push({ id: r.u16(), name: r.str() });
+  for (let n = r.u8(); n > 0; n--) list.push({ id: r.u16(), name: r.str(), team: readTeam(r), shipClass: r.u8() });
   return list;
 }
 
@@ -416,6 +451,8 @@ export class SnapshotWriter {
       .u8(ship.cooldown)
       .u8(ship.boostLock)
       .u8(ship.blastCooldown)
+      .u16(ship.abilityCooldown)
+      .u8(ship.abilityTime)
       .u16(Math.ceil(ship.hp))
       .u16(Math.ceil(ship.shield))
       .u16(ship.flags)
@@ -430,7 +467,23 @@ export class SnapshotWriter {
     for (let i = 0; i < STAT_COUNT; i++) w.u8(ship.statLevels[i]);
     w.u8(ship.weapon).u8(ship.weaponChoice ? 1 : 0);
     for (let i = 0; i < POWERUP_COUNT; i++) w.u16(ship.powerups[i]);
-    w.u32(ship.spawnTick);
+    w.u32(ship.spawnTick).u8(ship.shipClass).u8(ship.perks);
+  }
+
+  /**
+   * The match: round phase and timing, team scores, each outpost's owner and
+   * capture progress, and the next solar flare. Sent only when it changed.
+   */
+  world(m) {
+    const w = this.w;
+    w.u8(m.phase).u32(m.phaseEnd).u8(wireTeam(m.winner));
+    w.u8(m.scores.length);
+    for (const score of m.scores) w.u16(Math.min(0xffff, Math.round(score)));
+    w.u8(m.outposts.length);
+    for (const o of m.outposts) w.u8(wireTeam(o.owner)).i8(Math.round(o.progress * 100)).u8(o.contested ? 1 : 0);
+    const f = m.flare;
+    w.u8(f ? 1 : 0);
+    if (f) w.u16(qAngle(f.angle)).u16(qAngle(f.halfWidth)).u32(f.start).u32(f.end);
   }
 
   spectate(id, x, y) {
@@ -454,21 +507,20 @@ export class SnapshotWriter {
   }
 
   /** `viewerShipId` marks the recipient's own projectiles; `tick` flags freshly fired ones. */
-  entity(e, viewerShipId, tick) {
+  /** One entity record; `motionOnly` sends a known ship as a compact SHIP_MOTION update. */
+  entity(e, viewerShipId, tick, motionOnly = false) {
     const w = this.w;
-    w.u8(e.type).u16(e.id);
+    w.u8(motionOnly ? SHIP_MOTION : e.type).u16(e.id);
     switch (e.type) {
       case EntityType.SHIP:
-        w.u16(e.playerId)
-          .u16(qPos(e.x))
+        if (!motionOnly) w.u16(e.playerId).u8(e.level).u8(e.weapon);
+        w.u16(qPos(e.x))
           .u16(qPos(e.y))
           .u16(qAngle(e.angle))
           .i16(qVel(e.vx))
           .i16(qVel(e.vy))
           .u8(qFrac(e.hp, e.maxHp))
-          .u16(e.flags)
-          .u8(e.level)
-          .u8(e.weapon);
+          .u16(e.flags);
         break;
       case EntityType.ASTEROID: {
         const o = e.orbit;
@@ -530,6 +582,9 @@ export class SnapshotWriter {
         case EventKind.DAMAGE:
           w.u16(Math.min(Math.round(ev.amount), 0xffff)).u16(qAngle(ev.angle));
           break;
+        case EventKind.HEAL:
+          w.u16(Math.min(Math.round(ev.amount), 0xffff)).u16(qPos(ev.x)).u16(qPos(ev.y));
+          break;
         default:
           throw new Error(`cannot encode event kind ${ev.kind}`);
       }
@@ -555,6 +610,25 @@ export class SnapshotWriter {
     w.view.setUint8(countAt, n);
   }
 
+  /**
+   * Temporary gravity fields (singularities) inside the box around (cx, cy).
+   * Positions are already snapped to the wire format, so clients predict
+   * their pull exactly.
+   */
+  fields(list, cx, cy, hw, hh) {
+    const w = this.w;
+    const countAt = w.pos;
+    let n = 0;
+    w.u8(0);
+    for (let i = 0; i < list.length && n < 255; i++) {
+      const f = list[i];
+      if (Math.abs(wrapDelta(f.x - cx, WORLD_SIZE)) > hw + f.range || Math.abs(wrapDelta(f.y - cy, WORLD_SIZE)) > hh + f.range) continue;
+      w.u16(f.id).u8(wireTeam(f.team)).u16(f.ownerId).u16(qPos(f.x)).u16(qPos(f.y)).u32(f.born).u32(f.expires);
+      n++;
+    }
+    w.view.setUint8(countAt, n);
+  }
+
   finish() {
     return this.w.finish();
   }
@@ -565,6 +639,10 @@ export function readEntity(type, r, o) {
   switch (type) {
     case EntityType.SHIP:
       o.playerId = r.u16();
+      o.level = r.u8();
+      o.weapon = r.u8();
+    // falls through: the rest is the motion update
+    case SHIP_MOTION:
       o.x = dqPos(r.u16());
       o.y = dqPos(r.u16());
       o.angle = dqAngle(r.u16());
@@ -572,8 +650,6 @@ export function readEntity(type, r, o) {
       o.vy = dqVel(r.i16());
       o.hpFrac = r.u8() / 255;
       o.flags = r.u16();
-      o.level = r.u8();
-      o.weapon = r.u8();
       break;
     case EntityType.ASTEROID: {
       const bits = r.u8();
@@ -643,6 +719,8 @@ function readSelf(r, o) {
   o.cooldown = r.u8();
   o.boostLock = r.u8();
   o.blastCooldown = r.u8();
+  o.abilityCooldown = r.u16();
+  o.abilityTime = r.u8();
   o.hp = r.u16();
   o.shield = r.u16();
   o.flags = r.u16();
@@ -670,6 +748,36 @@ function readStats(r, o) {
   o.powerups = o.powerups ?? new Uint16Array(POWERUP_COUNT);
   for (let i = 0; i < POWERUP_COUNT; i++) o.powerups[i] = r.u16();
   o.spawnTick = r.u32();
+  o.shipClass = r.u8();
+  o.perks = r.u8();
+  return o;
+}
+
+function readWorld(r, o) {
+  o.phase = r.u8();
+  o.phaseEnd = r.u32();
+  o.winner = readTeam(r);
+  o.scores = o.scores ?? [];
+  o.scores.length = 0;
+  for (let n = r.u8(); n > 0; n--) o.scores.push(r.u16());
+  o.outposts = o.outposts ?? [];
+  const count = r.u8();
+  for (let i = 0; i < count; i++) {
+    const op = o.outposts[i] ?? (o.outposts[i] = {});
+    op.owner = readTeam(r);
+    op.progress = r.i8() / 100;
+    op.contested = r.u8() === 1;
+  }
+  o.outposts.length = count;
+  if (r.u8() === 1) {
+    const f = o.flare ?? (o.flare = {});
+    f.angle = dqAngle(r.u16());
+    f.halfWidth = dqAngle(r.u16());
+    f.start = r.u32();
+    f.end = r.u32();
+  } else {
+    o.flare = null;
+  }
   return o;
 }
 
@@ -689,6 +797,8 @@ function readEvent(kind, r) {
       };
     case EventKind.DAMAGE:
       return { kind, amount: r.u16(), angle: dqAngle(r.u16()) };
+    case EventKind.HEAL:
+      return { kind, amount: r.u16(), x: dqPos(r.u16()), y: dqPos(r.u16()) };
     default:
       throw new Error(`unknown event kind ${kind}`);
   }
@@ -696,18 +806,19 @@ function readEvent(kind, r) {
 
 /**
  * Decodes a snapshot (type byte already consumed) into callbacks on `sink`:
- *   begin(tick), self(s), stats(s), spectate(id, x, y), remove(id, reason, collectorId),
+ *   begin(tick), self(s), stats(s), spectate(id, x, y), world(m), remove(id, reason, collectorId),
  *   entity(type, id, reader) -> must call readEntity(type, reader, target), event(ev),
- *   effect(kind, x, y, angle, sourceId), end()
- * `self` and `stats` objects are reused between calls.
+ *   effect(kind, x, y, angle, sourceId), fields(list), end()
+ * The objects passed to `self`, `stats`, `world` and `fields` are reused between calls.
  */
-export function readSnapshot(r, sink, scratch = { self: {}, stats: {} }) {
+export function readSnapshot(r, sink, scratch = { self: {}, stats: {}, world: {}, fields: [] }) {
   const tick = r.u32();
   const flags = r.u8();
   sink.begin(tick);
   if (flags & SnapFlag.SELF) sink.self(readSelf(r, scratch.self));
   if (flags & SnapFlag.STATS) sink.stats(readStats(r, scratch.stats));
   if (flags & SnapFlag.SPECTATE) sink.spectate(r.u16(), dqPos(r.u16()), dqPos(r.u16()));
+  if (flags & SnapFlag.WORLD) sink.world(readWorld(r, scratch.world ?? (scratch.world = {})));
   for (let n = r.u16(); n > 0; n--) {
     const id = r.u16();
     const reason = r.u8();
@@ -719,5 +830,11 @@ export function readSnapshot(r, sink, scratch = { self: {}, stats: {} }) {
   }
   for (let n = r.u8(); n > 0; n--) sink.event(readEvent(r.u8(), r));
   for (let n = r.u8(); n > 0; n--) sink.effect(r.u8(), dqPos(r.u16()), dqPos(r.u16()), dqAngle(r.u16()), r.u16());
+  const fields = scratch.fields ?? (scratch.fields = []);
+  fields.length = 0;
+  for (let n = r.u8(); n > 0; n--) {
+    fields.push({ id: r.u16(), team: readTeam(r), ownerId: r.u16(), x: dqPos(r.u16()), y: dqPos(r.u16()), born: r.u32(), expires: r.u32() });
+  }
+  sink.fields(fields);
   sink.end();
 }

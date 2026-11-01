@@ -73,8 +73,8 @@ export class Connection {
     if (this.isOpen) this.ws.send(bytes);
   }
 
-  join(name) {
-    this.send(encodeJoin(this.writer, name));
+  join(name, shipClass) {
+    this.send(encodeJoin(this.writer, name, shipClass));
   }
 
   sendInput(seq, buttons, aimQ) {

@@ -1,5 +1,13 @@
-/** DOM overlays: join menu, death screen and connection toast. User text only ever goes into textContent. */
+/**
+ * DOM overlays: join menu with the ship class picker, death screen (where the
+ * class can be changed before flying again) and connection toast. User text
+ * only ever goes into textContent.
+ */
+import { CLASSES, CLASS_COUNT } from '../shared/stats.js';
+import { traceHull, traceHullDetails } from './renderer.js';
+
 const NAME_KEY = 'blasteroid.name';
+const CLASS_KEY = 'blasteroid.class';
 
 function readStorage(key) {
   try {
@@ -33,8 +41,13 @@ export class Ui {
     this.againButton = $('again');
     this.toast = $('toast');
     this.devHint = $('dev-hint');
+    this.teamNote = $('team-note');
 
     this.nameInput.value = readStorage(NAME_KEY);
+    const saved = Number.parseInt(readStorage(CLASS_KEY), 10);
+    this.selectedClass = saved >= 0 && saved < CLASS_COUNT ? saved : 0;
+    this.pickers = [this.buildPicker($('classes'), $('class-desc')), this.buildPicker($('death-classes'), $('death-class-desc'))];
+    this.selectClass(this.selectedClass);
     this.form.addEventListener('submit', (e) => {
       e.preventDefault();
       handlers.play(this.name());
@@ -46,6 +59,48 @@ export class Ui {
     const name = this.nameInput.value.trim();
     writeStorage(NAME_KEY, name);
     return name;
+  }
+
+  /** The ship class picked for the next spawn. */
+  shipClass() {
+    return this.selectedClass;
+  }
+
+  /** One row of class cards (each with a drawing of its hull) and a description line. */
+  buildPicker(row, desc) {
+    const cards = CLASSES.map((c, i) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'class-card';
+      const icon = document.createElement('canvas');
+      icon.width = icon.height = 88;
+      drawIcon(icon, i);
+      const name = document.createElement('strong');
+      name.textContent = c.name.toUpperCase();
+      const role = document.createElement('span');
+      role.textContent = c.role;
+      card.append(icon, name, role);
+      card.addEventListener('click', () => this.selectClass(i));
+      row.append(card);
+      return card;
+    });
+    return { cards, desc };
+  }
+
+  selectClass(index) {
+    this.selectedClass = index;
+    writeStorage(CLASS_KEY, String(index));
+    const c = CLASSES[index];
+    for (const { cards, desc } of this.pickers) {
+      cards.forEach((card, i) => card.setAttribute('aria-pressed', String(i === index)));
+      const ability = document.createElement('b');
+      ability.textContent = `[E] ${c.ability.name}`;
+      desc.replaceChildren(ability, ` · ${c.desc}`);
+    }
+  }
+
+  setTeams(enabled) {
+    this.teamNote.classList.toggle('hidden', !enabled);
   }
 
   get menuVisible() {
@@ -111,4 +166,24 @@ export class Ui {
   hideToast() {
     this.toast.classList.add('hidden');
   }
+}
+
+/** Draws a class's hull, nose up, centred in a card's canvas. */
+function drawIcon(canvas, shipClass) {
+  const ctx = canvas.getContext('2d');
+  const size = canvas.width;
+  ctx.translate(size / 2, size / 2);
+  ctx.rotate(-Math.PI / 2);
+  const r = size * 0.28 * (CLASSES[shipClass].radius / 18);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  traceHull(ctx, shipClass, r);
+  ctx.fillStyle = 'rgba(92, 242, 255, 0.12)';
+  ctx.fill();
+  ctx.strokeStyle = '#e8ecff';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  traceHullDetails(ctx, shipClass, r);
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
 }

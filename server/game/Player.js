@@ -70,6 +70,8 @@ export class Player {
     this.brain = null; // BotBrain for bots
     this.retiring = false; // surplus bot waiting to leave unnoticed
     this.stealth = false; // hidden from bots and aliens (dev tool)
+    this.team = -1; // NO_TEAM until the game assigns one
+    this.shipClass = 0; // ShipClass for the next spawn
     this.removed = false;
   }
 }

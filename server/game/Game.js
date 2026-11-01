@@ -4,8 +4,10 @@
  * notable events. It has no knowledge of sockets, so it can be driven
  * directly by tests, benchmarks and bots.
  */
-import { KillCause, SNAPSHOT_INTERVAL, WORLD_SIZE } from '../../shared/constants.js';
+import { KillCause, SNAPSHOT_INTERVAL, TEAM_COUNT, WORLD_SIZE } from '../../shared/constants.js';
 import { createRng } from '../../shared/math.js';
+import { CLASSES, CLASS_COUNT } from '../../shared/stats.js';
+import { applyFieldEffects, updateFields, updateMedics } from './abilities.js';
 import { updateAliens, collideAliens, maintainAliens } from './aliens.js';
 import { maintainAsteroids, seedAsteroids, updateAsteroids } from './asteroids.js';
 import { maintainBots, runBots } from './bots.js';
@@ -13,16 +15,25 @@ import { collideBullets, updateBullets } from './bullets.js';
 import { killShip } from './combat.js';
 import { IdPool } from './IdPool.js';
 import { randomName } from './names.js';
+import { applyPerks, generateTerrain, resetObjectives, spawnPoint, updateObjectives } from './objectives.js';
 import { maintainPickups, updatePickups } from './pickups.js';
 import { generateSolarSystem, maintainBelts, seedBelts, updateBodies } from './planets.js';
 import { Player } from './Player.js';
 import { chooseWeapon, collideShips, despawnShip, processShipInputs, updateShips, upgradeStat } from './ships.js';
 import { spawnShip } from './spawning.js';
 import { SpatialGrid } from './SpatialGrid.js';
-import { GRID_CELL, MOTHERSHIP, REWARD, SHIP } from './tuning.js';
+import { createMatch, pickTeam, updateRound } from './teams.js';
+import { FLARE, GRID_CELL, MOTHERSHIP, REWARD, SHIP } from './tuning.js';
+
+const validClass = (c) => (Number.isInteger(c) && c >= 0 && c < CLASS_COUNT ? c : 0);
+const spawnScratch = { x: 0, y: 0, vx: 0, vy: 0, angle: 0 };
 
 export class Game {
-  constructor({ seed = (Math.random() * 2 ** 32) >>> 0, botTarget = 0 } = {}) {
+  /**
+   * `teams`: two teams fighting over outposts in rounds (the default), or a
+   * free-for-all where everyone is on their own.
+   */
+  constructor({ seed = (Math.random() * 2 ** 32) >>> 0, botTarget = 0, teams = true } = {}) {
     this.seed = seed;
     this.rng = createRng(seed);
     this.botTarget = botTarget;
@@ -45,6 +56,16 @@ export class Game {
     this.outbox = { roster: [], rosterRemoved: [], kills: [], deaths: [], announcements: [] };
     /** The star and planets (see shared/gravity.js); posed for the current tick at the start of each step. */
     this.planets = generateSolarSystem(this.rng);
+    /** Outposts and nebulae (see objectives.js); sent to clients once, in the welcome message. */
+    this.terrain = generateTerrain(this);
+    /** Teams, rounds, outpost control and solar flares, replicated whenever they change. */
+    this.match = createMatch(teams ? TEAM_COUNT : 0, 0);
+    resetObjectives(this);
+    this.nextFlareTick = FLARE.firstDelay;
+    /** Graviton singularities: all live ones, and those acting this tick. */
+    this.fields = [];
+    this.activeFields = [];
+    this.nextFieldId = 0;
     /**
      * Recent visual effects (blasts) for the network layer to replicate. Each
      * is kept for exactly one snapshot interval, so every snapshot sees it once.
@@ -57,11 +78,13 @@ export class Game {
 
   /* Players ----------------------------------------------------------------- */
 
-  /** Registers a player. They have no ship until spawned (see requestSpawn). */
-  addPlayer(name, isBot = false) {
+  /** Registers a player on the smaller team. They have no ship until spawned (see requestSpawn). */
+  addPlayer(name, isBot = false, shipClass = 0) {
     const id = this.playerIds.alloc();
     if (!id) return null;
     const player = new Player(id, name || randomName(this.rng), isBot, SHIP.maxCredits);
+    player.team = pickTeam(this, isBot);
+    player.shipClass = validClass(shipClass);
     this.players.set(id, player);
     if (!isBot) this.humanCount++;
     this.outbox.roster.push(player);
@@ -92,9 +115,14 @@ export class Game {
     player.removed = true;
   }
 
-  /** Spawns the player as soon as their respawn delay allows. */
-  requestSpawn(player) {
-    if (!player.ship) player.wantsSpawn = true;
+  /** Spawns the player as soon as their respawn delay allows, as `shipClass` if given. */
+  requestSpawn(player, shipClass) {
+    if (player.ship) return;
+    player.wantsSpawn = true;
+    if (shipClass !== undefined && validClass(shipClass) !== player.shipClass) {
+      player.shipClass = validClass(shipClass);
+      this.outbox.roster.push(player); // everyone draws the new hull
+    }
   }
 
   /**
@@ -121,10 +149,12 @@ export class Game {
     this.tick++;
     updateBodies(this);
     this.pruneEffects();
+    updateFields(this);
     this.spawnWaitingPlayers();
     runBots(this);
     processShipInputs(this);
     updateShips(this);
+    updateMedics(this);
     updateAliens(this);
     updateAsteroids(this);
     updateBullets(this);
@@ -133,6 +163,9 @@ export class Game {
     collideBullets(this);
     collideShips(this);
     collideAliens(this);
+    applyFieldEffects(this);
+    updateObjectives(this);
+    updateRound(this, resetObjectives);
     maintainAsteroids(this);
     maintainBelts(this);
     maintainAliens(this);
@@ -148,7 +181,12 @@ export class Game {
         player.inputs.clear();
         player.credits = 0;
         player.timeAnchored = false;
-        spawnShip(this, player);
+        const ship = spawnShip(this, player, spawnPoint(this, player, CLASSES[player.shipClass].radius, spawnScratch));
+        if (ship && player.team >= 0 && this.match.perks[player.team]) {
+          applyPerks(ship, this.match.perks[player.team]);
+          ship.hp = ship.maxHp;
+          ship.energy = ship.st.energyMax;
+        }
       }
     }
   }

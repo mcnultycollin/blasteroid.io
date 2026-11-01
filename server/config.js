@@ -14,6 +14,8 @@ export const config = Object.freeze({
   maxPlayers: int(env.MAX_PLAYERS, 40),
   /** Bots fill each room up to this many players; 0 disables bots. */
   botTarget: int(env.BOTS, 10),
+  /** Two teams fighting over outposts in rounds (default), or 0 for a free-for-all. */
+  teams: env.TEAMS ? env.TEAMS === '1' || env.TEAMS === 'true' : true,
   maxConnectionsPerIp: int(env.MAX_CONNECTIONS_PER_IP, 8),
   /** Testing aids such as stealth (press I). On by default except in production. */
   devTools: env.DEV_TOOLS ? env.DEV_TOOLS === '1' || env.DEV_TOOLS === 'true' : env.NODE_ENV !== 'production',

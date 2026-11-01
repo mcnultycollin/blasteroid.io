@@ -24,6 +24,7 @@
     <link rel="modulepreload" href="/shared/stats.js" />
     <link rel="modulepreload" href="/shared/physics.js" />
     <link rel="modulepreload" href="/shared/gravity.js" />
+    <link rel="modulepreload" href="/shared/terrain.js" />
     <link rel="modulepreload" href="/shared/protocol.js" />
   </head>
   <body>
@@ -33,6 +34,9 @@
       <div class="panel">
         <h1>BLASTEROID<span>.IO</span></h1>
         <p class="tagline">Blast rocks. Outgun pilots. Survive the saucers.</p>
+        <p id="team-note" class="team-note hidden">Team battle: <span class="helios">HELIOS</span> vs <span class="polaris">POLARIS</span>. Capture outposts, win the round.</p>
+        <div id="classes" class="classes" role="group" aria-label="Ship class"></div>
+        <p id="class-desc" class="class-desc"></p>
         <form id="join-form" autocomplete="off">
           <input id="name" maxlength="16" placeholder="Pilot name" spellcheck="false" aria-label="Pilot name" />
           <button id="play" type="submit">PLAY</button>
@@ -42,9 +46,9 @@
           <div><kbd>Mouse</kbd> aim &nbsp; <kbd>Click</kbd> / <kbd>Space</kbd> fire &nbsp; <kbd>Shift</kbd> boost</div>
           <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> thrusters: forward, left, back, right</div>
           <div><kbd>↑</kbd> thrust &nbsp; <kbd>←</kbd> <kbd>→</kbd> rotate &nbsp; <kbd>↓</kbd> / <kbd>Q</kbd> brake</div>
-          <div><kbd>P</kbd> kinetic blast &nbsp; <kbd>L</kbd> lock orbit (in a gravity well)</div>
+          <div><kbd>E</kbd> class ability &nbsp; <kbd>P</kbd> kinetic blast &nbsp; <kbd>L</kbd> lock orbit</div>
           <div><kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
-          <div class="touch-hint">Touch: drag left side to steer and thrust, hold right side to fire; BLAST, LOCK and BRAKE buttons on the right</div>
+          <div class="touch-hint">Touch: drag left side to steer and thrust, hold right side to fire; ability, BLAST, LOCK and BRAKE buttons on the right</div>
           <div id="dev-hint" class="hidden"><kbd>I</kbd> hide from bots (testing) &nbsp; <kbd>F3</kbd> netgraph</div>
         </div>
         <p class="footer"><a href="/">About Blasteroid.io</a></p>
@@ -56,6 +60,8 @@
         <h2 id="death-title">DESTROYED</h2>
         <p id="death-cause" class="tagline"></p>
         <div id="death-stats" class="stats"></div>
+        <div id="death-classes" class="classes" role="group" aria-label="Ship class"></div>
+        <p id="death-class-desc" class="class-desc"></p>
         <button id="again" type="button">FLY AGAIN</button>
         <p class="status">or press <kbd>Enter</kbd></p>
       </div>

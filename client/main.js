@@ -20,9 +20,12 @@ import {
   FxKind,
   KickReason,
   KillCause,
+  NO_TEAM,
   PROTOCOL_VERSION,
+  Perk,
   PickupKind,
   RemoveReason,
+  RoundPhase,
   SHIP_NOSE,
   SHIP_RADIUS,
   ShipFlag,
@@ -34,7 +37,7 @@ import {
 import { clamp, wrapDelta, wrapLerp } from '../shared/math.js';
 import { StepResult, computeShots } from '../shared/physics.js';
 import { NO_ID, dqAngle, qAngle } from '../shared/protocol.js';
-import { WEAPON_CHOICES, Weapon, viewScaleForLevel } from '../shared/stats.js';
+import { Ability, CLASSES, SINGULARITY, ShipClass, WEAPON_CHOICES, Weapon, viewScaleForLevel } from '../shared/stats.js';
 import { Sound } from './audio.js';
 import { Color, Effects, hueColor } from './effects.js';
 import { FlightPath } from './flightpath.js';
@@ -44,7 +47,7 @@ import { Connection } from './net.js';
 import { Predictor } from './prediction.js';
 import { Renderer, playerColor } from './renderer.js';
 import { Ui } from './ui.js';
-import { ClientWorld } from './world.js';
+import { ClientWorld, TEAM_NAMES } from './world.js';
 
 const State = Object.freeze({ CONNECTING: 0, MENU: 1, PLAYING: 2, DEAD: 3 });
 const MAX_STEPS_PER_FRAME = 8;
@@ -56,6 +59,12 @@ const POWERUP_NAMES = {
   [PickupKind.REPAIR]: ['HULL REPAIRED', '#7dff6a'],
   [PickupKind.OVERDRIVE]: ['OVERDRIVE', '#ff5cf2'],
 };
+const PERK_TEXT = {
+  [Perk.FORGE]: 'Forge: +15% weapon damage for your team',
+  [Perk.REFINERY]: 'Refinery: +50% energy recharge for your team',
+  [Perk.SHIPYARD]: 'Shipyard: your team respawns on this outpost',
+};
+const PULSE_RANGE = CLASSES[ShipClass.MEDIC].ability.range;
 const KICK_MESSAGES = {
   [KickReason.SERVER_FULL]: 'Server is full. Try again in a moment.',
   [KickReason.OUTDATED]: 'A new version is available. Refresh the page to play.',
@@ -100,8 +109,12 @@ class GameClient {
     this.hadWeaponChoice = false;
     this.debug = null; // netgraph data while F3 is toggled on
     this.devTools = false; // server allows testing aids (stealth)
+    this.teams = false; // team rounds (vs free-for-all)
+    this.myTeam = NO_TEAM;
+    this.flareBurned = -1; // start tick of the last flare whose burn we announced
     this.traffic = { at: performance.now(), bytes: 0, snapshots: 0, kbps: 0, snapshotsPerSecond: 0 };
 
+    this.predictor.fields = this.world.gravityFields; // enemy singularities pull our ship too
     this.ui.setPlayEnabled(false);
     this.net.connect();
     this.frame = this.frame.bind(this);
@@ -113,7 +126,7 @@ class GameClient {
   play(name) {
     this.sound.unlock();
     if (!this.net.isOpen || this.predictor.active) return;
-    this.net.join(name);
+    this.net.join(name, this.ui.shipClass());
     this.ui.setStatus('Launching…');
   }
 
@@ -143,14 +156,21 @@ class GameClient {
         this.devTools = (w.features & Feature.DEV_TOOLS) !== 0;
         this.ui.setDevTools(this.devTools);
         this.world.setBodies(w.bodies);
+        this.world.setTerrain(w.nebulae, w.outposts);
         this.predictor.bodies = this.world.planets;
+        this.teams = (w.features & Feature.TEAMS) !== 0;
+        this.ui.setTeams(this.teams);
       },
       joined: (id) => {
         this.myPlayerId = id;
+        this.setMyTeam(this.world.playerTeam(id));
       },
       snapshot: (reader) => this.world.applySnapshot(reader, performance.now()),
       roster: (list) => {
-        for (const p of list) this.world.setPlayer(p.id, p.name);
+        for (const p of list) {
+          this.world.setPlayer(p.id, p.name, p.team, p.shipClass);
+          if (p.id === this.myPlayerId) this.setMyTeam(p.team);
+        }
       },
       rosterRemove: (id) => this.world.roster.delete(id),
       leaderboard: (lb) => {
@@ -187,13 +207,82 @@ class GameClient {
       damaged: () => {},
       predictedImpact: (x, y) => this.effects.spark(x, y, Color.ORANGE),
       event: (ev) => this.onEvent(ev),
-      effect: (kind, x, y, angle) => {
-        if (kind === FxKind.BLAST) {
-          this.effects.blast(x + Math.cos(angle) * SHIP_NOSE, y + Math.sin(angle) * SHIP_NOSE, angle, BLAST_RANGE, BLAST_HALF_ANGLE);
-          this.sound.blast(x, y, false);
-        }
-      },
+      effect: (kind, x, y, angle) => this.playEffect(kind, x, y, angle, 0, 0, false),
+      match: (m, previous) => this.onMatch(m, previous),
     };
+  }
+
+  setMyTeam(team) {
+    this.myTeam = team;
+    this.predictor.team = team;
+  }
+
+  /**
+   * Draws and plays a blast or class ability. Our own are predicted and
+   * played the moment the key is pressed; others' arrive as effects.
+   */
+  playEffect(kind, x, y, angle, vx, vy, mine) {
+    const fx = this.effects;
+    const c = Math.cos(angle);
+    const sn = Math.sin(angle);
+    switch (kind) {
+      case FxKind.BLAST:
+        fx.blast(x + c * SHIP_NOSE, y + sn * SHIP_NOSE, angle, BLAST_RANGE, BLAST_HALF_ANGLE, vx, vy);
+        this.sound.blast(x, y, mine);
+        if (mine) fx.addShake(5);
+        return;
+      case FxKind.DASH:
+        fx.dash(x, y, mine ? vx : c, mine ? vy : sn);
+        this.sound.ability(Ability.DASH, x, y, mine);
+        return;
+      case FxKind.RAM:
+        fx.ram(x, y, angle);
+        this.sound.ability(Ability.RAM, x, y, mine);
+        if (mine) fx.addShake(6);
+        return;
+      case FxKind.PULSE:
+        fx.pulse(x, y, PULSE_RANGE);
+        this.sound.ability(Ability.PULSE, x, y, mine);
+        return;
+      case FxKind.SINGULARITY:
+        fx.singularity(x, y, SINGULARITY.range * 0.7);
+        this.sound.ability(Ability.SINGULARITY, x, y, mine);
+        return;
+    }
+  }
+
+  /** Match updates: outposts changing hands and rounds ending or starting. */
+  onMatch(m, previous) {
+    if (!previous || !this.teams) return;
+    const now = performance.now();
+    const mine = this.myTeam;
+    for (let i = 0; i < m.outposts.length; i++) {
+      const before = previous.outposts[i];
+      const after = m.outposts[i];
+      if (!before || before.owner === after.owner) continue;
+      const def = this.world.outposts[i];
+      const name = def ? def.name.toUpperCase() : 'OUTPOST';
+      if (after.owner !== NO_TEAM && after.owner === mine) {
+        this.hud.announce('OUTPOST CAPTURED', `${name} · ${PERK_TEXT[def?.perk] ?? ''}`, playerColor(this.world.playerHue(this.myPlayerId)), now);
+        this.sound.capture(true);
+      } else if (before.owner !== NO_TEAM && before.owner === mine) {
+        this.hud.announce('OUTPOST LOST', name, '#ff4d4d', now);
+        this.sound.capture(false);
+      } else if (after.owner !== NO_TEAM) {
+        this.hud.notice(`${TEAM_NAMES[after.owner]} TOOK ${name}`, '#ff8c42', now);
+      }
+    }
+    if (m.phase !== previous.phase) {
+      if (m.phase === RoundPhase.INTERMISSION) {
+        const won = mine !== NO_TEAM && m.winner === mine;
+        const title = mine === NO_TEAM ? `${TEAM_NAMES[m.winner]} WIN` : won ? 'VICTORY' : 'DEFEAT';
+        this.hud.announce(title, `${TEAM_NAMES[m.winner]} win the round${won ? ' · +300 score' : ''}`, won ? '#ffd166' : '#ff4d4d', now);
+        if (won) this.sound.levelUp();
+      } else {
+        this.hud.announce('NEW ROUND', 'Outposts are neutral again: capture and hold them', '#fff', now);
+      }
+    }
+    if (m.flare && (!previous.flare || previous.flare.start !== m.flare.start)) this.sound.flareWarning();
   }
 
   onSelf(s, tick) {
@@ -230,6 +319,8 @@ class GameClient {
       weaponChoice: s.weaponChoice,
       powerups: Uint16Array.from(s.powerups),
       spawnTick: s.spawnTick,
+      shipClass: s.shipClass,
+      perks: s.perks,
       receivedTick: tick,
     };
     this.predictor.setStats(s);
@@ -276,6 +367,8 @@ class GameClient {
       [KillCause.ASTEROID]: killer ? `Pushed into an asteroid by ${killer}` : 'You hit an asteroid',
       [KillCause.PLANET]: killer ? `Pushed into a planet by ${killer}` : 'You crashed into a planet',
       [KillCause.STAR]: killer ? `Shoved into the star by ${killer}` : 'You flew into the star',
+      [KillCause.FLARE]: killer ? `Caught by a solar flare after a fight with ${killer}` : 'Caught in the open by a solar flare',
+      [KillCause.SINGULARITY]: killer ? `Crushed in ${killer}'s singularity` : 'Crushed in a singularity',
       [KillCause.ALIEN]: 'Shot down by an alien saucer',
       [KillCause.MOTHERSHIP]: 'Obliterated by the Mothership',
     }[d.cause];
@@ -321,6 +414,12 @@ class GameClient {
         break;
       case KillCause.STAR:
         parts = killer ? [killer, text(' shoved '), victim, text(' into the star')] : [victim, text(' burned up in the star')];
+        break;
+      case KillCause.FLARE:
+        parts = [victim, text(' was scorched by a solar flare')];
+        break;
+      case KillCause.SINGULARITY:
+        parts = killer ? [killer, text(' crushed '), victim, text(' in a singularity')] : [victim, text(' was crushed in a singularity')];
         break;
       default:
         parts = [victim, text(' was shot down by aliens')];
@@ -421,6 +520,10 @@ class GameClient {
         }
         break;
       }
+      case EventKind.HEAL:
+        this.effects.text(ev.x, ev.y - 22, `+${ev.amount}`, '#7dff6a', 13);
+        this.effects.heal(ev.x, ev.y);
+        break;
       case EventKind.DAMAGE:
         this.hud.addDamage(ev.angle, performance.now());
         this.effects.addShake(Math.min(9, 2 + ev.amount / 4));
@@ -506,13 +609,8 @@ class GameClient {
     // Everything below is predicted feedback: it plays the moment the key is pressed.
     const s = p.state;
     if (result & StepResult.FIRED) this.firePredicted();
-    if (result & StepResult.BLAST) {
-      const c = Math.cos(s.angle);
-      const sn = Math.sin(s.angle);
-      this.effects.blast(s.x + c * SHIP_NOSE, s.y + sn * SHIP_NOSE, s.angle, BLAST_RANGE, BLAST_HALF_ANGLE, s.vx, s.vy);
-      this.effects.addShake(5);
-      this.sound.blast(s.x, s.y, true);
-    }
+    if (result & StepResult.BLAST) this.playEffect(FxKind.BLAST, s.x, s.y, s.angle, s.vx, s.vy, true);
+    if (result & StepResult.ABILITY) this.useAbility(s, p.st.ability);
     if (result & StepResult.LOCKED) this.onLocked();
     if (result & StepResult.UNLOCKED) {
       this.sound.lock(false);
@@ -533,6 +631,27 @@ class GameClient {
       }
     }
     if (result & StepResult.THRUST) this.exhaust(s, buttons, (result & StepResult.BOOST) !== 0);
+  }
+
+  /** Our class ability fired (predicted): the effect plays at once, the server applies it. */
+  useAbility(s, ability) {
+    switch (ability) {
+      case Ability.DASH:
+        this.playEffect(FxKind.DASH, s.x, s.y, s.angle, s.vx, s.vy, true);
+        break;
+      case Ability.RAM:
+        this.playEffect(FxKind.RAM, s.x, s.y, s.angle, s.vx, s.vy, true);
+        break;
+      case Ability.PULSE:
+        this.playEffect(FxKind.PULSE, s.x, s.y, s.angle, s.vx, s.vy, true);
+        break;
+      case Ability.SINGULARITY: {
+        const x = s.x + Math.cos(s.angle) * SINGULARITY.distance;
+        const y = s.y + Math.sin(s.angle) * SINGULARITY.distance;
+        this.playEffect(FxKind.SINGULARITY, x, y, s.angle, 0, 0, true);
+        break;
+      }
+    }
   }
 
   /** Exhaust puffs from whichever thrusters are firing, blowing opposite their push. */
@@ -594,11 +713,13 @@ class GameClient {
       const local = p.lastResult;
       const held = p.lastButtons;
       sv.flags =
-        (this.self.flags & ~(ShipFlag.THRUST | ShipFlag.BOOST | ShipFlag.BRAKE | ShipFlag.LOCKED)) |
+        (this.self.flags & ~(ShipFlag.THRUST | ShipFlag.BOOST | ShipFlag.BRAKE | ShipFlag.LOCKED | ShipFlag.ABILITY)) |
         (local & StepResult.THRUST && (local & StepResult.BOOST || held & Button.THRUST) ? ShipFlag.THRUST : 0) |
         (local & StepResult.BOOST ? ShipFlag.BOOST : 0) |
         (p.state.lockBody >= 0 ? ShipFlag.LOCKED : 0);
       sv.thrusters = local & StepResult.THRUST ? held & (Button.BACK | Button.STRAFE_LEFT | Button.STRAFE_RIGHT) : 0;
+      sv.shipClass = p.st.shipClass;
+      if (p.st.ability === Ability.RAM && p.state.abilityTime > 0) sv.flags |= ShipFlag.ABILITY;
       sv.playerId = this.myPlayerId;
       sv.level = this.stats?.level ?? 1;
       sv.weapon = p.weapon;
@@ -625,7 +746,7 @@ class GameClient {
     let lock = null;
     if (selfView) {
       flight = this.flight;
-      flight.update(p.state, p.st, world.planets, p.commandTick(p.seq), selfView.rx, selfView.ry);
+      flight.update(p.state, p.st, world.planets, p.commandTick(p.seq), selfView.rx, selfView.ry, world.gravityFields, this.myTeam, p.shipId);
       const body = p.state.lockBody >= 0 ? world.planets[p.state.lockBody] : null;
       if (body) {
         lock = this.lockView;
@@ -633,6 +754,13 @@ class GameClient {
         lock.radius = p.state.lockRadius;
         lock.dir = p.state.lockDir;
       }
+    }
+
+    const flare = world.match?.flare;
+    if (flare && presentTick >= flare.start && this.flareBurned !== flare.start) {
+      this.flareBurned = flare.start;
+      this.sound.flareBurn();
+      this.effects.addShake(6);
     }
 
     renderer.setViewScale(viewScale);
@@ -650,6 +778,7 @@ class GameClient {
       self: selfView,
       effects: this.effects,
       time: now / 1000,
+      tick: presentTick,
       flight,
       lock,
     });
@@ -678,6 +807,12 @@ class GameClient {
       flight,
       blastReady: p.active && p.state.blastCooldown === 0 && p.state.energy >= p.st.blastCost,
       blastCharge: p.active ? 1 - p.state.blastCooldown / p.st.blastInterval : 0,
+      abilityReady: p.active && p.state.abilityCooldown === 0 && p.state.energy >= p.st.abilityCost,
+      abilityCharge: p.active ? 1 - p.state.abilityCooldown / p.st.abilityCooldown : 0,
+      shipClass: p.st.shipClass,
+      team: this.myTeam,
+      teams: this.teams,
+      perks: this.stats?.perks ?? 0,
       shipX: selfView ? selfView.rx : 0,
       shipY: selfView ? selfView.ry : 0,
       touchStick: this.input.touchMode && this.input.stick.id !== -1 ? this.input.stick : null,

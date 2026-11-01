@@ -20,7 +20,8 @@ import { WEAPON_UNLOCK_LEVEL, Weapon, deriveStats, levelForScore } from '../../s
 import { orbitAngle, orbitState } from '../../shared/gravity.js';
 import { makeOrbit, orbitBand } from './planets.js';
 import { randomVelocity, spawnAsteroid, spawnPickup } from './spawning.js';
-import { ASTEROID, PICKUP, POWERUP, REWARD, SHIP } from './tuning.js';
+import { addTeamScore } from './teams.js';
+import { ASTEROID, PICKUP, POWERUP, REWARD, ROUND, SHIP } from './tuning.js';
 
 const POWERUP_KINDS = [PickupKind.SHIELD, PickupKind.RAPID, PickupKind.REPAIR, PickupKind.OVERDRIVE];
 const velocity = { vx: 0, vy: 0 };
@@ -53,6 +54,8 @@ export function refreshStats(ship) {
     ship.powerups[Powerup.RAPID] > 0,
     ship.powerups[Powerup.OVERDRIVE] > 0,
     ship.st,
+    ship.shipClass,
+    ship.perks,
   );
   ship.maxHp = ship.st.maxHp;
   if (ship.maxHp > oldMax) ship.hp += ship.maxHp - oldMax;
@@ -111,6 +114,7 @@ export function killShip(game, ship, attacker, cause) {
     killer.kills++;
     awardScore(game, killer, Math.round(REWARD.killBase + ship.score * REWARD.killShare), ship.x, ship.y);
   }
+  if (killer && killer.team !== ship.team) addTeamScore(game, killer.team, ROUND.killPoints);
   dropOrbs(game, ship.x, ship.y, ship.score * REWARD.dropShare);
 
   const player = ship.player;

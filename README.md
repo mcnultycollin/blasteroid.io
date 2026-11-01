@@ -1,8 +1,9 @@
 # Blasteroid.io
 
 A retro multiplayer space shooter for the browser. Classic Asteroids vector
-graphics and physics, rebuilt as an .io game: a shared arena, PvP, aliens,
-endless play, and a ship that grows stronger the longer you survive.
+graphics and physics, rebuilt as an .io game: two teams battle across a living
+solar system for outposts, in four ship classes, with aliens, endless play and
+a ship that grows stronger the longer you survive.
 
 ```sh
 npm install
@@ -21,6 +22,7 @@ Requires Node.js 20 or newer. The only runtime dependency is
 | Fire | left click or `Space` | `Space` | hold right side |
 | Retro brake | `Q` | `↓` | `BRAKE` button |
 | Boost | `Shift` | `Shift` | drag the stick far |
+| Class ability | `E` | `E` | ability button |
 | Kinetic blast | `P` | `P` | `BLAST` button |
 | Lock / release orbit | `L` | `L` | `LOCK` button |
 | Upgrade a stat | `1`–`8` or click the panel | | tap the panel |
@@ -34,8 +36,17 @@ Requires Node.js 20 or newer. The only runtime dependency is
   against a planet's pull. Thrusters cannot push you past cruise speed (boost
   goes faster), but gravity can: dive past a planet to slingshot.
 
+- **Teams**: you join the smaller of two teams, *Helios* (orange) and
+  *Polaris* (blue). Your shots pass through teammates and blasts never shove
+  them. Teammates show on your minimap. A round goes to the first team to
+  1000 points (or the leader after 12 minutes; a tie goes to sudden death):
+  points come from holding outposts and destroying enemies, and every pilot
+  on the winning team earns a 300-point bonus. After a 10-second intermission
+  the outposts reset and the next round starts; ships and levels carry on.
+  Set `TEAMS=0` for a free-for-all.
 - **Score** comes from asteroids (smaller is worth more), aliens, other
-  pilots and the orbs they drop, plus a trickle for staying alive and active.
+  pilots and the orbs they drop, capturing and holding outposts, healing
+  teammates, plus a trickle for staying alive and active.
 - **Levels** (up to 40) each grant an upgrade point for one of eight stats:
   hull, repair, engines, handling, damage, velocity, reload and energy.
   Veterans also see a little further.
@@ -70,6 +81,42 @@ Requires Node.js 20 or newer. The only runtime dependency is
   and hunter escorts; destroying it pays out big.
 - **Dying** drops part of your score as orbs and credits your killer, including
   if you are knocked into a rock shortly after a fight or disconnect mid-fight.
+  On the death screen you can switch ship class before flying again.
+
+### Ship classes
+
+Pick a class on the menu (or the death screen). Every class levels up and
+chooses weapons the same way; they differ in hull, handling and one ability on
+`E`, which costs energy (shared with boost and the blast) and then recharges.
+
+| Class | Role | Hull | Speed | Damage | Ability |
+| --- | --- | --- | --- | --- | --- |
+| **Fighter** | dogfighter | 100% | 100% | 100% | *Afterburner*: an instant burst of speed towards the thrusters you hold (forward by default), past the cruise limit. Dodge, chase or escape. |
+| **Breaker** | rammer | 160%, big and heavy | 92% | 80%, slower fire | *Ram Drive*: a 1.2 s charge that lifts the speed limit to 1.8×. Shatters any asteroid it ploughs into, rams enemies for heavy damage and takes almost none. Breakers also shrug off half of normal rock damage. |
+| **Medic** | support | 90% | 106% | 65% | *Repair Pulse*: heals every teammate around you at once. Medic shots repair teammates they hit, and teammates near a Medic regenerate. Healing pays score. |
+| **Graviton** | controller | 120% | 90% | 85% | *Singularity*: a 4-second gravity well ahead of the nose that drags enemies (never teammates) and loose rocks in, rips belt rocks off their orbits and crushes whatever reaches its core. Pull defenders off an outpost, pile enemies up for your team, or drag them into the star. |
+
+### Terrain objectives
+
+- **Outposts**: each planet carries one on its night side (planets are tidally
+  locked, so it always faces away from the star and rides along with its
+  planet). Hold its zone with more pilots than the enemy to capture it (8 s
+  alone, faster with up to three); both teams in the zone freeze it, and an
+  empty zone drifts back to its owner. A held outpost scores 2 team points a
+  second and grants its whole team a perk: the **Forge** on the dense core
+  world (+15% weapon damage), the **Refinery** on the gas giant (+50% energy
+  recharge) and the **Shipyard** on the rocky world (respawn landed on the
+  outpost). Getting there means flying into a gravity well, so orbits, locks
+  and landings all matter.
+- **Solar flares**: every minute or two the star erupts in a wedge, announced
+  6 seconds ahead with a countdown and a pulsing outline. Anything caught in
+  the open is scorched (about 90 hull); planets cast safe shadows, drawn as
+  dark cones, and the HUD tells you whether you are exposed or sheltered.
+  Outposts are always in their planet's shadow.
+- **Nebulae**: violet clouds in the open space beyond the planets' orbits.
+  Inside one you are invisible to enemies further than about 320 units away:
+  the server never sends your position to their clients and bots lose track of
+  you. Firing, blasting or using your ability gives you away for 1.5 seconds.
 
 ## Development
 
@@ -91,8 +138,9 @@ server.js              entry point (npm start)
 shared/                code the server and browser both run
   constants.js         tick rate, world size, wire enums
   math.js              torus math, swept collisions, seeded RNG
-  stats.js             levels, upgrades, weapons, derived ship stats
-  gravity.js           star and planets on rails, gravity, surfaces, orbits
+  stats.js             levels, upgrades, weapons, ship classes, derived ship stats
+  gravity.js           star and planets on rails, gravity, surfaces, orbits, singularity fields
+  terrain.js           outposts on night sides, flare shadows, nebulae (geometry)
   physics.js           deterministic ship step (thrusters, orbit lock, blast), used for prediction
   protocol.js          binary encoders/decoders for every message
 server/
@@ -101,6 +149,9 @@ server/
   http/static.js       allow-listed static files, cached and compressed in production
   net/                 rooms, sessions, per-client replication
   game/                the simulation: Game, entities, spatial grid, systems, bots
+    teams.js           team assignment, team scores and rounds
+    objectives.js      outposts and perks, solar flares, nebula stealth
+    abilities.js       kinetic blast, class abilities, singularities
 client/                browser game: prediction, interpolation, rendering, HUD, audio, input
 public/                landing page (/), game page (/play), static assets
 test/                  node:test suites
@@ -116,9 +167,11 @@ commands, refilled one per tick. That absorbs network jitter, but flooding
 commands can never move a ship faster than real time.
 
 **Client-side prediction.** Your ship runs the same `stepShip()` as the
-server, so input feels instant: thrusters, brake, orbit lock and the blast's
-recoil are all predicted, and the blast's effect and sound play the moment you
-press the key. Snapshots carry your ship's exact state
+server, so input feels instant: thrusters, brake, orbit lock, the blast's
+recoil, the Fighter's afterburner and the Breaker's ram drive are all
+predicted, and every ability's effect and sound play the moment you press the
+key. Team perks that change your ship (the Refinery's energy recharge) reach
+your client in the stats block and are folded into the same derivation. Snapshots carry your ship's exact state
 after the last input the server applied. The client rewinds to that state and
 replays the inputs that are still unacknowledged. With no outside influence
 the replay lands exactly where you already were, so there is no visual
@@ -149,6 +202,18 @@ in bursts. The offset is set when you spawn and only re-anchored if it drifts
 far from world time (one tiny correction near a planet). Gravity math uses
 only operations that IEEE 754 makes bit-identical in every browser.
 
+**Singularities, predicted exactly.** A Graviton's singularity is a
+temporary gravity field. The server snaps its position to the wire format and
+starts it on the next command tick, and every snapshot lists the fields in
+view with their lifetimes, so an enemy's client includes the pull in its
+prediction for exactly the commands the server applies it to. (The first
+snapshot after one appears is a correction, like any knockback.)
+
+**Hidden means never sent.** Nebula stealth is enforced in replication: an
+enemy hidden in a nebula is treated as out of view, so a modified client has
+nothing to reveal. The match state (scores, outposts, the coming flare) is
+sent only when it changes.
+
 Belt rocks ride exact circular orbits around their moving planet, so each one
 is sent once as orbit parameters and drawn analytically. Rocks knocked loose
 (by a blast, a ram or a split) fall freely and are streamed every snapshot
@@ -163,21 +228,27 @@ at full precision. Snapshots go out at 30 Hz with per-client interest
 management: only entities in your view are sent. Ships and aliens are
 streamed every snapshot. Predictable entities are sent once and then only
 when their motion changes, with removals carrying a reason so clients play
-the right effect.
+the right effect. Ships a client already knows get a compact motion-only
+record; their owner, level and weapon are re-sent only when they change.
 
 ## Performance
 
 `npm run bench` runs a full room of bots and encodes a snapshot for every
 player, as if each were connected. Measured on the development container in
-the 8192² solar-system arena, with moving planets, belts and bots using
-thrusters and blasts:
+the 8192² solar-system arena, in team mode, with bots playing the outposts,
+using every class ability, blasts and thrusters:
 
 | Players | Simulation per tick | Snapshots per round | CPU (one core) | Snapshot size | Per-client downstream |
 | --- | --- | --- | --- | --- | --- |
-| 40 | 0.27 ms | 0.38 ms | 2.8% | 116 B | 3.4 KiB/s |
-| 80 | 0.53 ms | 1.10 ms | 6.5% | 163 B | 4.8 KiB/s |
-| 160 | 0.83 ms | 2.75 ms | 13% | 248 B | 7.3 KiB/s |
-| 320 | 1.76 ms | 7.85 ms | 34% | 421 B | 12.3 KiB/s |
+| 40 | 0.35 ms | 0.57 ms | 3.8% | 303 B | 8.9 KiB/s |
+| 80 | 0.69 ms | 1.80 ms | 9.5% | 554 B | 16.2 KiB/s |
+| 160 | 1.22 ms | 4.82 ms | 20% | 905 B | 26.5 KiB/s |
+| 320 | 2.84 ms | 14.8 ms | 62% | 1331 B | 39 KiB/s |
+
+Objectives concentrate the fighting: in team mode a pilot typically has about
+nine ships on screen, against two in a free-for-all, and ships are streamed
+every snapshot, so snapshots are larger than in free-for-all (`TEAMS=0`:
+about 130 B at 40 players). Rooms hold 40 humans by default.
 
 **Room size and lag.** Players only receive what is on their screen, so
 per-player bandwidth depends on how crowded the arena is, not on how many
@@ -214,6 +285,7 @@ load balancer.
 | `NODE_ENV` | | `production` serves assets from memory with brotli/gzip and ETags |
 | `MAX_PLAYERS` | `40` | Humans per room before another room opens |
 | `BOTS` | `10` | Bots fill each room up to this many players (`0` disables) |
+| `TEAMS` | `1` | Two teams fighting over outposts in rounds; `0` for a free-for-all |
 | `MAX_CONNECTIONS_PER_IP` | `8` | Simultaneous sockets per address |
 | `TRUST_PROXY` | | `1` to take client IPs from `X-Forwarded-For` (only behind your own proxy) |
 | `ALLOWED_ORIGINS` | | Comma-separated WebSocket origins; empty allows any |
@@ -224,7 +296,9 @@ Bots use the same input pipeline as humans and look like normal players, so
 small rooms stay lively. Set `BOTS=0` to turn them off. Most are beatable
 rookies and a few are aces (`BOT.skillTiers` in `server/game/tuning.js`);
 rookies aim and lead worse, react slower, pick fewer fights and shoot in
-bursts.
+bursts. In team games bots keep the teams even, pick a mix of classes,
+capture and defend outposts, hide behind planets from flares, heal teammates
+and use their abilities.
 
 Stealth (`I`) hides you from bots and aliens so you can test things
 undisturbed. They stop targeting you, but stray shots and rocks can still hit.
@@ -252,6 +326,14 @@ It's a development aid, so production servers ignore it unless `DEV_TOOLS=1`.
   brake and the blast's cost, cooldown and recoil are in `shared/stats.js`;
   the blast's push is `BLAST` in `server/game/tuning.js`, its cone in
   `shared/constants.js`.
+- **Ship classes**: hulls, handling and abilities are in `CLASSES` and
+  `SINGULARITY` (`shared/stats.js`); what abilities do to others is in
+  `ABILITY` (`server/game/tuning.js`). A new class needs an entry there, a
+  hull in `traceHull` (`client/renderer.js`) and, if its ability moves the
+  ship, a branch in `stepShip` so it is predicted.
+- **Teams and objectives**: `ROUND`, `OUTPOST`, `FLARE` and `NEBULA` in
+  `server/game/tuning.js`; outposts and nebulae are generated in
+  `server/game/objectives.js`.
 - **New weapon**: add an entry to `WEAPONS` in `shared/stats.js` (muzzles,
   multipliers) and list it in `WEAPON_CHOICES`. Prediction picks it up
   automatically.

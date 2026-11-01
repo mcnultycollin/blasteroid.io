@@ -98,6 +98,49 @@ export function poseBodies(bodies, tick, out) {
   return out;
 }
 
+/**
+ * A temporary gravity well (a Graviton's singularity) at a fixed point. It
+ * has no surface: anything can pass through, and its pull is capped inside
+ * the `core` radius. Fields are not bodies (they cannot be landed on or
+ * orbit-locked), but every gravity function here accepts them. A field
+ * exists for commands and ticks in [born, expires).
+ */
+export function createField(id, x, y, gm, range, core, born, expires, team, ownerId) {
+  return {
+    id,
+    x,
+    y,
+    vx: 0,
+    vy: 0,
+    gm,
+    range,
+    rangeSq: range * range,
+    fadeFrom: range * GRAVITY.fadeStart,
+    radius: core,
+    surfacePull: gm / (core * core),
+    born,
+    expires,
+    team,
+    ownerId,
+  };
+}
+
+/**
+ * Writes the fields among `fields` that act at `tick` on something of
+ * `team` to `out`: enemy fields only (or, without teams, everyone's but
+ * `selfId`'s own). Returns `out`.
+ */
+export function fieldsAt(fields, tick, team, selfId, out) {
+  out.length = 0;
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i];
+    if (tick < f.born || tick >= f.expires) continue;
+    if (team >= 0 ? f.team === team : f.ownerId === selfId) continue;
+    out.push(f);
+  }
+  return out;
+}
+
 /* Gravity ----------------------------------------------------------------- */
 
 /** Strength of a body's pull at distance `d` from its centre (0 outside its range). */
@@ -226,21 +269,25 @@ export function insideBody(x, y, radius, bodies) {
 
 /* Free motion and orbits ------------------------------------------------------ */
 
+const NO_FIELDS = Object.freeze([]);
+
 /**
- * One tick of unpowered motion for a loose rock: gravity, orbital decay
- * inside a well (relative to the body it orbits, as if through a thin
- * atmosphere that moves with the planet), then drift. Identical on the server
- * and when the client extrapolates. Returns true while inside a well.
+ * One tick of unpowered motion for a loose rock: gravity (and any active
+ * fields), orbital decay inside a well (relative to the body it orbits, as if
+ * through a thin atmosphere that moves with the planet), then drift.
+ * Identical on the server and when the client extrapolates. Returns true
+ * while inside a well or a field, where the motion is not a straight line.
  */
-export function stepBallistic(b, bodies) {
+export function stepBallistic(b, bodies, fields = NO_FIELDS) {
   const host = applyGravity(b, bodies);
+  const pulled = fields.length > 0 && applyGravity(b, fields) !== null;
   if (host) {
     b.vx = host.vx + (b.vx - host.vx) * GRAVITY.wellDecay;
     b.vy = host.vy + (b.vy - host.vy) * GRAVITY.wellDecay;
   }
   b.x = wrap(b.x + b.vx * TICK_DT, WORLD_SIZE);
   b.y = wrap(b.y + b.vy * TICK_DT, WORLD_SIZE);
-  return host !== null;
+  return host !== null || pulled;
 }
 
 /** Angular speed (rad/s) of a circular orbit of radius `r`; valid for the faded pull too. */

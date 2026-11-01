@@ -13,8 +13,8 @@
  * offset in every snapshot. Until the first report of a life arrives we use an
  * estimate; spawns are far from any gravity well, so it never matters.
  */
-import { Powerup, WORLD_SIZE } from '../shared/constants.js';
-import { poseBodies } from '../shared/gravity.js';
+import { NO_TEAM, Powerup, WORLD_SIZE } from '../shared/constants.js';
+import { fieldsAt, poseBodies } from '../shared/gravity.js';
 import { lerpAngle, wrap, wrapDelta, wrapLerp } from '../shared/math.js';
 import { copyShipState, createShipState, stepShip } from '../shared/physics.js';
 import { NO_ID } from '../shared/protocol.js';
@@ -49,6 +49,9 @@ export class Predictor {
     this.lastCorrection = 0;
     this.bodies = []; // the star and planets, from the welcome message; posed per command
     this.posed = [];
+    this.fields = []; // singularities known to the world (see ClientWorld.fields)
+    this.acting = []; // those acting on us at the command being simulated
+    this.team = NO_TEAM;
   }
 
   /** The world tick command `seq` runs at. */
@@ -56,10 +59,11 @@ export class Predictor {
     return seq + this.timeOffset;
   }
 
-  /** Steps the ship with one command at its command time. */
+  /** Steps the ship with one command at its command time, with enemy singularities acting then. */
   simulate(seq, buttons, aim) {
     const tick = seq + this.timeOffset;
-    return stepShip(this.state, buttons, aim, this.st, poseBodies(this.bodies, tick, this.posed), tick);
+    const fields = this.fields.length > 0 ? fieldsAt(this.fields, tick, this.team, this.shipId, this.acting) : this.fields;
+    return stepShip(this.state, buttons, aim, this.st, poseBodies(this.bodies, tick, this.posed), tick, fields);
   }
 
   setStats(stats) {
@@ -69,6 +73,8 @@ export class Predictor {
       stats.powerups[Powerup.RAPID] > 0,
       stats.powerups[Powerup.OVERDRIVE] > 0,
       this.st,
+      stats.shipClass,
+      stats.perks,
     );
     this.weapon = stats.weapon;
   }

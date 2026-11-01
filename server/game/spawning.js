@@ -1,16 +1,16 @@
 /** Factory helpers that create entities and register them with the game. */
-import { AlienKind, WORLD_SIZE } from '../../shared/constants.js';
-import { TAU, wrapDelta } from '../../shared/math.js';
+import { AlienKind, NO_TEAM, WORLD_SIZE } from '../../shared/constants.js';
+import { TAU, wrap, wrapDelta } from '../../shared/math.js';
 import { Alien, Asteroid, Bullet, Mask, Pickup, Ship } from './entities.js';
 import { ALIENS, SHIP } from './tuning.js';
 
 const nearby = [];
 
-/** Squared distance from (x, y) to the closest live ship, or Infinity. */
-export function nearestShipDistSq(game, x, y) {
+/** Squared distance from (x, y) to the closest live ship (not of `team`), or Infinity. */
+export function nearestShipDistSq(game, x, y, team = NO_TEAM) {
   let best = Infinity;
   for (const s of game.ships) {
-    if (s.dead) continue;
+    if (s.dead || (team !== NO_TEAM && s.team === team)) continue;
     const dx = wrapDelta(s.x - x, WORLD_SIZE);
     const dy = wrapDelta(s.y - y, WORLD_SIZE);
     const d = dx * dx + dy * dy;
@@ -21,17 +21,27 @@ export function nearestShipDistSq(game, x, y) {
 
 /**
  * Picks a random point, preferring spots at least `minShipDistance` from any
- * ship and clear of asteroids, aliens and planets (and of gravity wells
- * entirely with `avoidWells`). Returns the best of a few samples.
+ * ship (any enemy of `team`) and clear of asteroids, aliens and planets (and
+ * of gravity wells entirely with `avoidWells`). With `around` ({x, y,
+ * radius}) it only samples that area. Returns the best of a few samples.
  */
-export function findOpenSpot(game, minShipDistance, tries = 24, avoidWells = false) {
+export function findOpenSpot(game, minShipDistance, tries = 24, avoidWells = false, around = null, team = NO_TEAM) {
   let bestX = 0;
   let bestY = 0;
   let bestScore = -Infinity;
   for (let i = 0; i < tries; i++) {
-    const x = game.rng() * WORLD_SIZE;
-    const y = game.rng() * WORLD_SIZE;
-    let score = Math.min(Math.sqrt(nearestShipDistSq(game, x, y)), minShipDistance);
+    let x;
+    let y;
+    if (around) {
+      const a = game.rng() * TAU;
+      const d = Math.sqrt(game.rng()) * around.radius;
+      x = wrap(around.x + Math.cos(a) * d, WORLD_SIZE);
+      y = wrap(around.y + Math.sin(a) * d, WORLD_SIZE);
+    } else {
+      x = game.rng() * WORLD_SIZE;
+      y = game.rng() * WORLD_SIZE;
+    }
+    let score = Math.min(Math.sqrt(nearestShipDistSq(game, x, y, team)), minShipDistance);
     nearby.length = 0;
     game.grid.query(x, y, 180, 180, Mask.ASTEROID | Mask.ALIEN, nearby);
     for (const o of nearby) {
@@ -64,12 +74,24 @@ export function randomVelocity(rng, minSpeed, maxSpeed, out) {
   return out;
 }
 
-export function spawnShip(game, player) {
+/**
+ * Spawns the player's ship at `spot` ({x, y, vx, vy, angle}), or by default
+ * somewhere quiet outside every gravity well.
+ */
+export function spawnShip(game, player, spot = null) {
   const ship = new Ship(player);
-  const spot = findOpenSpot(game, 900, 24, true); // never spawn inside a gravity well
-  ship.x = spot.x;
-  ship.y = spot.y;
-  ship.angle = game.rng() * TAU;
+  if (spot) {
+    ship.x = spot.x;
+    ship.y = spot.y;
+    ship.vx = spot.vx;
+    ship.vy = spot.vy;
+    ship.angle = spot.angle;
+  } else {
+    const open = findOpenSpot(game, 900, 24, true); // never spawn inside a gravity well
+    ship.x = open.x;
+    ship.y = open.y;
+    ship.angle = game.rng() * TAU;
+  }
   ship.hp = ship.maxHp = ship.st.maxHp;
   ship.energy = ship.st.energyMax;
   ship.invuln = SHIP.spawnInvuln;

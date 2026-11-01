@@ -4,7 +4,7 @@
  * tuning (spawn rates, rewards, AI) lives in server/game/tuning.js.
  */
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /* Timing ------------------------------------------------------------------ */
 
@@ -48,6 +48,8 @@ export const ShipFlag = Object.freeze({
   OVERDRIVE: 64,
   STEALTH: 128, // hidden from bots and aliens (a development tool)
   LOCKED: 256, // orbit-locked around a body
+  ABILITY: 512, // class ability active (the Breaker's ram drive)
+  HIDDEN: 1024, // inside a nebula: invisible to enemies beyond close range
 });
 
 export const ASTEROID_RADIUS = [18, 36, 62]; // indexed by size class: small, medium, large
@@ -92,25 +94,52 @@ export const Button = Object.freeze({
   STRAFE_RIGHT: 512,
   BLAST: 1024, // kinetic push wave
   LOCK: 2048, // toggle orbit lock (sent once per key press)
+  ABILITY: 4096, // class ability
 });
-export const BUTTON_MASK = 0x0fff;
+export const BUTTON_MASK = 0x1fff;
+
+/* Teams ------------------------------------------------------------------- */
+
+export const TEAM_COUNT = 2;
+export const NO_TEAM = -1; // free-for-all: everyone fights everyone
+export const TeamId = Object.freeze({ HELIOS: 0, POLARIS: 1 });
 
 /* Messages ---------------------------------------------------------------- */
 
-export const KillCause = Object.freeze({ SHIP: 0, ASTEROID: 1, ALIEN: 2, MOTHERSHIP: 3, RAM: 4, PLANET: 5, STAR: 6 });
+export const KillCause = Object.freeze({
+  SHIP: 0,
+  ASTEROID: 1,
+  ALIEN: 2,
+  MOTHERSHIP: 3,
+  RAM: 4,
+  PLANET: 5,
+  STAR: 6,
+  FLARE: 7, // caught in the open by a solar flare
+  SINGULARITY: 8, // crushed in a Graviton's singularity
+});
 export const Announce = Object.freeze({
   MOTHERSHIP_INBOUND: 1,
   MOTHERSHIP_DESTROYED: 2,
   MOTHERSHIP_ESCAPED: 3,
 });
 export const KickReason = Object.freeze({ SERVER_FULL: 1, OUTDATED: 2, SHUTDOWN: 3, IDLE: 4, ABUSE: 5 });
-export const EventKind = Object.freeze({ SCORE: 1, HIT: 2, DAMAGE: 3 });
-export const MarkerKind = Object.freeze({ LEADER: 1, MOTHERSHIP: 2 });
+export const EventKind = Object.freeze({ SCORE: 1, HIT: 2, DAMAGE: 3, HEAL: 4 });
+export const MarkerKind = Object.freeze({ LEADER: 1, MOTHERSHIP: 2, ALLY: 3 });
 /** Optional server features, announced in the welcome message. */
-export const Feature = Object.freeze({ DEV_TOOLS: 1 });
+export const Feature = Object.freeze({ DEV_TOOLS: 1, TEAMS: 2 });
 /** Visual effects broadcast to nearby clients. */
-export const FxKind = Object.freeze({ BLAST: 1 });
+export const FxKind = Object.freeze({ BLAST: 1, PULSE: 2, DASH: 3, RAM: 4, SINGULARITY: 5 });
 
 /** The kinetic blast's cone (shared so clients draw exactly what the server applies). */
 export const BLAST_RANGE = 380; // to the target's surface
 export const BLAST_HALF_ANGLE = 0.6; // radians either side of the nose
+
+/* Objectives ---------------------------------------------------------------- */
+
+/** Team perks from outposts. Each outpost grants one to the team holding it. */
+export const Perk = Object.freeze({ FORGE: 1, REFINERY: 2, SHIPYARD: 4 });
+export const OUTPOST_RADIUS = 190; // capture zone, centred on the outpost on the planet's surface
+export const FLARE_REACH = 3600; // solar flares stay inside half the world, so they never wrap onto themselves
+export const FLARE_SHADOW_MARGIN = 6; // planets shade a little more than their own radius
+export const RoundPhase = Object.freeze({ PLAYING: 0, INTERMISSION: 1 });
+export const ROUND_WIN_SCORE = 1000; // team points that win a round

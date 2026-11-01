@@ -21,12 +21,13 @@ const KEY_BUTTONS = {
   KeyD: Button.STRAFE_RIGHT,
   KeyQ: Button.BRAKE,
   KeyP: Button.BLAST,
+  KeyE: Button.ABILITY,
   Space: Button.FIRE,
   ShiftLeft: Button.BOOST,
   ShiftRight: Button.BOOST,
 };
 const WEAPON_KEYS = { KeyZ: 0, KeyX: 1, KeyC: 2 };
-const TOUCH_HOLD = { blast: Button.BLAST, brake: Button.BRAKE }; // on-screen buttons held down by a finger
+const TOUCH_HOLD = { blast: Button.BLAST, brake: Button.BRAKE, ability: Button.ABILITY }; // on-screen buttons held by a finger
 const STICK_DEADZONE = 14; // px
 const STICK_BOOST = 85; // px: pushing the stick this far engages boost
 

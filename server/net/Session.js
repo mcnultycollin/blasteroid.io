@@ -15,6 +15,7 @@ export class Session {
     this.known = new Map(); // entity object -> version last replicated
     this.statsShip = null;
     this.statsVersion = -1;
+    this.matchVersion = -1; // match state last replicated (see Game.match.version)
     this.spectating = null;
     this.camX = WORLD_SIZE / 2;
     this.camY = WORLD_SIZE / 2;

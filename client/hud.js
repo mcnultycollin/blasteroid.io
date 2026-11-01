@@ -5,12 +5,29 @@
  * direction, off-screen indicators and touch buttons. Clickable areas are
  * recorded while drawing and resolved by hitTest().
  */
-import { BodyKind, EntityType, MarkerKind, POWERUP_COUNT, POWERUP_SECONDS, ShipFlag, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import {
+  BodyKind,
+  EntityType,
+  FLARE_REACH,
+  FLARE_SHADOW_MARGIN,
+  MarkerKind,
+  NO_TEAM,
+  Perk,
+  POWERUP_COUNT,
+  POWERUP_SECONDS,
+  ROUND_WIN_SCORE,
+  RoundPhase,
+  ShipFlag,
+  TICK_RATE,
+  WORLD_SIZE,
+} from '../shared/constants.js';
 import { gravityAt } from '../shared/gravity.js';
 import { TAU, clamp, wrapDelta } from '../shared/math.js';
-import { MAX_LEVEL, STAT_COUNT, STAT_INFO, STAT_MAX, WEAPONS, WEAPON_CHOICES, scoreForLevel } from '../shared/stats.js';
+import { CLASSES, MAX_LEVEL, STAT_COUNT, STAT_INFO, STAT_MAX, WEAPONS, WEAPON_CHOICES, scoreForLevel } from '../shared/stats.js';
+import { exposedToFlare, nightSide, starOf } from '../shared/terrain.js';
 import { Flight } from './flightpath.js';
-import { FLIGHT_COLORS, playerColor } from './renderer.js';
+import { FLIGHT_COLORS, playerColor, teamColor } from './renderer.js';
+import { TEAM_NAMES } from './world.js';
 
 const FONT = 'ui-monospace, Menlo, Consolas, monospace';
 const MARGIN = 16;
@@ -21,6 +38,12 @@ const POWERUP_UI = [
 ];
 const WEAPON_KEYS = ['Z', 'X', 'C'];
 const NOTICE_MS = 1800;
+const SCOREBOARD_H = 46; // height of the team scoreboard at the top centre
+const PERK_NAMES = [
+  [Perk.FORGE, 'FORGE +15% DMG'],
+  [Perk.REFINERY, 'REFINERY +50% ENERGY'],
+  [Perk.SHIPYARD, 'SHIPYARD SPAWN'],
+];
 const TOUCH_BLAST = { r: 36 }; // on-screen buttons for touch play
 const TOUCH_SMALL = { r: 28 };
 
@@ -39,6 +62,7 @@ export class Hud {
     this.upgradePanelTop = 0;
     this.pull = { x: 0, y: 0 };
     this.pullRatio = 0; // gravity at the ship relative to its thrust
+    this.point = { x: 0, y: 0, nx: 0, ny: 0 };
     this.notices = []; // { text, color, time }: small, short-lived messages above the status bars
   }
 
@@ -90,7 +114,8 @@ export class Hud {
    * `v` carries: ctx, width, height, dpr, now (ms), playing, self (hp, shield,
    * energy, flags), stats, st (derived stats), world, myPlayerId, camX, camY,
    * scale, ping, fps, serverTick, touch, touchStick, shipScreen, planets,
-   * flight (FlightPath or null), blastReady, blastCharge, debug.
+   * flight (FlightPath or null), blastReady, blastCharge, abilityReady,
+   * abilityCharge, shipClass, team, perks, debug.
    */
   draw(v) {
     const { ctx, dpr } = v;
@@ -116,12 +141,15 @@ export class Hud {
       this.drawWeaponChoice(ctx, v, W, H);
       this.drawPowerups(ctx, v, W, H);
       this.drawBlastGauge(ctx, v, W, H);
+      this.drawAbilityGauge(ctx, v, W, H);
       this.drawOrbitReadout(ctx, v, W, H);
       this.drawNotices(ctx, v, W, H);
       if (v.touch) this.drawTouchButtons(ctx, v, W, H);
     }
     this.drawLeaderboard(ctx, v, W);
     this.drawMinimap(ctx, v, W, H);
+    this.drawScoreboard(ctx, v, W);
+    this.drawFlareWarning(ctx, v, W);
     this.drawKillfeed(ctx, v, W);
     this.drawAnnouncements(ctx, v, W, H);
     this.drawNetStats(ctx, v, H);
@@ -187,10 +215,23 @@ export class Hud {
     const alive = Math.max(0, Math.floor((v.serverTick - stats.spawnTick) / TICK_RATE));
     const time = `${Math.floor(alive / 60)}:${String(alive % 60).padStart(2, '0')}`;
     ctx.fillText(`RANK ${rank}   KILLS ${stats.kills}   TIME ${time}`, MARGIN, MARGIN + 44);
+    let line = MARGIN + 62;
+    ctx.font = `bold 11px ${FONT}`;
     if (self.flags & ShipFlag.STEALTH) {
-      ctx.font = `bold 11px ${FONT}`;
       ctx.fillStyle = '#b48cff';
-      ctx.fillText('STEALTH: HIDDEN FROM BOTS  [I]', MARGIN, MARGIN + 62);
+      ctx.fillText('STEALTH: HIDDEN FROM BOTS  [I]', MARGIN, line);
+      line += 16;
+    }
+    if (self.flags & ShipFlag.HIDDEN) {
+      ctx.fillStyle = '#c9a6ff';
+      ctx.fillText('HIDDEN IN NEBULA: ENEMIES CAN\'T SEE YOU (FIRING GIVES YOU AWAY)', MARGIN, line);
+      line += 16;
+    }
+    for (const [perk, label] of PERK_NAMES) {
+      if (!(v.perks & perk)) continue;
+      ctx.fillStyle = teamColor(v.team);
+      ctx.fillText(label, MARGIN, line);
+      line += 16;
     }
   }
 
@@ -359,6 +400,35 @@ export class Hud {
       ctx.strokeStyle = star ? 'rgba(255,209,102,0.25)' : `hsla(${hue} 70% 65% / 0.22)`;
       ctx.stroke();
     }
+    // Nebulae, the coming flare's wedge and the outposts in their owner's colours
+    ctx.strokeStyle = 'rgba(180,140,255,0.35)';
+    for (const n of v.world.nebulae) {
+      ctx.beginPath();
+      ctx.arc(x + n.x * k, y + n.y * k, n.radius * k, 0, TAU);
+      ctx.stroke();
+    }
+    const star = starOf(v.planets ?? []);
+    const m = v.world.match;
+    if (star && m?.flare) {
+      ctx.beginPath();
+      ctx.moveTo(x + star.x * k, y + star.y * k);
+      ctx.arc(x + star.x * k, y + star.y * k, Math.min(FLARE_REACH * k, size), m.flare.angle - m.flare.halfWidth, m.flare.angle + m.flare.halfWidth);
+      ctx.closePath();
+      ctx.fillStyle = v.serverTick >= m.flare.start ? 'rgba(255,214,120,0.35)' : 'rgba(255,140,66,0.18)';
+      ctx.fill();
+    }
+    if (star && m) {
+      for (let i = 0; i < v.world.outposts.length; i++) {
+        const planet = v.planets[v.world.outposts[i].planet];
+        const o = m.outposts[i];
+        if (!planet || !o) continue;
+        const p = nightSide(star, planet, 0, this.point);
+        ctx.fillStyle = o.owner === NO_TEAM ? '#ffffff' : teamColor(o.owner);
+        ctx.globalAlpha = o.contested ? 0.5 + 0.5 * Math.sin(v.now / 70) : 1;
+        ctx.fillRect(x + p.x * k - 3, y + p.y * k - 3, 6, 6);
+      }
+      ctx.globalAlpha = 1;
+    }
     // Visible area, wrapped around the torus and clipped to the map
     const vw = (v.width / v.scale) * k;
     const vh = (v.height / v.scale) * k;
@@ -376,7 +446,12 @@ export class Hud {
     for (const m of this.leaderboard?.markers ?? []) {
       const mx = x + m.x * k;
       const my = y + m.y * k;
-      if (m.kind === MarkerKind.MOTHERSHIP) {
+      if (m.kind === MarkerKind.ALLY) {
+        ctx.fillStyle = teamColor(v.team);
+        ctx.beginPath();
+        ctx.arc(mx, my, 2.2, 0, TAU);
+        ctx.fill();
+      } else if (m.kind === MarkerKind.MOTHERSHIP) {
         ctx.fillStyle = Math.floor(v.now / 300) % 2 ? '#ff5cf2' : '#ffd166';
         ctx.fillRect(mx - 4, my - 4, 8, 8);
       } else {
@@ -397,7 +472,7 @@ export class Hud {
     const now = v.now;
     this.killfeed = this.killfeed.filter((k) => now - k.time < 7000);
     ctx.font = `12px ${FONT}`;
-    let y = MARGIN + 14;
+    let y = MARGIN + 14 + (v.world.match && v.teams ? SCOREBOARD_H + 26 : 0);
     for (const k of this.killfeed) {
       ctx.globalAlpha = clamp((7000 - (now - k.time)) / 800, 0, 1);
       let width = 0;
@@ -527,6 +602,99 @@ export class Hud {
     ctx.fillText(parts.join('   '), right, y + 15);
   }
 
+  /**
+   * Team scoreboard at the top centre: each team's score towards the round's
+   * target, the outposts (in their owner's colour, flashing while contested)
+   * and the round clock.
+   */
+  drawScoreboard(ctx, v, W) {
+    const m = v.world.match;
+    if (!m || !v.teams) return;
+    const w = Math.min(460, W - 2 * MARGIN - 470);
+    if (w < 240) return; // no room beside the leaderboard: the minimap still shows the outposts
+    const x = (W - w) / 2;
+    const y = MARGIN;
+    const half = w / 2 - 40;
+    ctx.fillStyle = 'rgba(6,8,24,0.55)';
+    ctx.fillRect(x, y, w, SCOREBOARD_H);
+    for (let t = 0; t < 2; t++) {
+      const color = teamColor(t);
+      const frac = clamp(m.scores[t] / ROUND_WIN_SCORE, 0, 1);
+      const mine = t === v.team;
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      const bx = t === 0 ? x + 8 : x + w - 8 - half;
+      ctx.fillRect(bx, y + 26, half, 6);
+      ctx.fillStyle = color;
+      ctx.fillRect(t === 0 ? bx + half * (1 - frac) : bx, y + 26, half * frac, 6);
+      ctx.font = `bold ${mine ? 14 : 13}px ${FONT}`;
+      ctx.textAlign = t === 0 ? 'left' : 'right';
+      ctx.fillText(`${TEAM_NAMES[t]}${mine ? ' ★' : ''}`, t === 0 ? x + 8 : x + w - 8, y + 18);
+      ctx.textAlign = t === 0 ? 'right' : 'left';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(String(m.scores[t]), t === 0 ? x + w / 2 - 44 : x + w / 2 + 44, y + 18);
+    }
+    // Outposts in the middle
+    const n = m.outposts.length;
+    for (let i = 0; i < n; i++) {
+      const o = m.outposts[i];
+      const px = x + w / 2 + (i - (n - 1) / 2) * 22;
+      const py = y + 13;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(Math.PI / 4);
+      ctx.globalAlpha = o.contested ? 0.5 + 0.5 * Math.sin(v.now / 70) : 1;
+      ctx.fillStyle = o.owner === NO_TEAM ? 'rgba(255,255,255,0.15)' : teamColor(o.owner);
+      ctx.fillRect(-6, -6, 12, 12);
+      if (o.owner === NO_TEAM && o.progress !== 0) {
+        ctx.fillStyle = teamColor(o.progress < 0 ? 0 : 1);
+        const k = Math.abs(o.progress) * 12;
+        ctx.fillRect(-6, 6 - k, 12, k);
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    // Round clock
+    const left = Math.max(0, Math.ceil((m.phaseEnd - v.serverTick) / TICK_RATE));
+    const clock = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+    ctx.font = `10px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    const label = m.phase === RoundPhase.INTERMISSION ? `NEXT ROUND ${clock}` : left > 0 ? `FIRST TO ${ROUND_WIN_SCORE} · ${clock}` : 'SUDDEN DEATH';
+    ctx.fillText(label, x + w / 2, y + SCOREBOARD_H - 4);
+  }
+
+  /** A solar flare is coming (or burning): how long until it hits, and whether we are sheltered. */
+  drawFlareWarning(ctx, v, W) {
+    const f = v.world.match?.flare;
+    if (!f || !v.playing) return;
+    const burning = v.serverTick >= f.start;
+    const exposed = exposedToFlare(v.planets, f, v.shipX, v.shipY, FLARE_REACH, FLARE_SHADOW_MARGIN);
+    const y = MARGIN + (v.world.match && v.teams ? SCOREBOARD_H + 18 : 14);
+    ctx.textAlign = 'center';
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.fillStyle = burning ? '#ffe08a' : '#ff8c42';
+    ctx.globalAlpha = 0.7 + 0.3 * Math.sin(v.now / 90);
+    const seconds = Math.max(0, (f.start - v.serverTick) / TICK_RATE).toFixed(1);
+    ctx.fillText(burning ? 'SOLAR FLARE!' : `SOLAR FLARE IN ${seconds}s`, W / 2, y);
+    ctx.globalAlpha = 1;
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.fillStyle = exposed ? '#ff4d4d' : '#7dff6a';
+    ctx.fillText(exposed ? 'EXPOSED: GET BEHIND A PLANET OR OUT OF THE WEDGE' : 'SHELTERED', W / 2, y + 16);
+  }
+
+  /** The class ability's readiness, beside the blast gauge. */
+  drawAbilityGauge(ctx, v, W, H) {
+    if (v.touch) return; // the touch ability button shows the same gauge
+    const barW = Math.min(440, W - 2 * MARGIN);
+    const x = (W + barW) / 2 + 64;
+    const y = H - MARGIN - 52 + 12;
+    this.drawGauge(ctx, x, y, 15, v.abilityCharge, v.abilityReady, 'E');
+    ctx.font = `9px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillText(CLASSES[v.shipClass]?.ability.name.toUpperCase() ?? '', x, y + 28);
+  }
+
   /** The kinetic blast's readiness: a ring that fills as it recharges, beside the status bars. */
   drawBlastGauge(ctx, v, W, H) {
     if (v.touch) return; // the touch BLAST button shows the same gauge
@@ -578,6 +746,13 @@ export class Hud {
     ctx.fill();
     this.drawGauge(ctx, x, y, TOUCH_BLAST.r, v.blastCharge, v.blastReady, 'BLAST');
     this.addHitArea(x - TOUCH_BLAST.r, y - TOUCH_BLAST.r, TOUCH_BLAST.r * 2, TOUCH_BLAST.r * 2, { type: 'blast' });
+    const ax = x - TOUCH_BLAST.r * 2 - 16;
+    ctx.fillStyle = 'rgba(255,209,102,0.08)';
+    ctx.beginPath();
+    ctx.arc(ax, y, TOUCH_BLAST.r, 0, TAU);
+    ctx.fill();
+    this.drawGauge(ctx, ax, y, TOUCH_BLAST.r, v.abilityCharge, v.abilityReady, CLASSES[v.shipClass]?.ability.name.split(' ')[0].toUpperCase() ?? 'E');
+    this.addHitArea(ax - TOUCH_BLAST.r, y - TOUCH_BLAST.r, TOUCH_BLAST.r * 2, TOUCH_BLAST.r * 2, { type: 'ability' });
 
     const locked = v.flight?.state === Flight.LOCKED;
     const inWell = v.flight !== null && v.flight.body !== null;

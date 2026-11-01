@@ -9,7 +9,7 @@
  * travelling around the star.
  */
 import { BodyKind, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
-import { GRAVITY, OrbitState, describeOrbit, dominantBody, poseBodies } from '../shared/gravity.js';
+import { GRAVITY, OrbitState, describeOrbit, dominantBody, fieldsAt, poseBodies } from '../shared/gravity.js';
 import { wrap, wrapDelta } from '../shared/math.js';
 import { LOCK_CLEARANCE, copyShipState, createShipState, stepShip } from '../shared/physics.js';
 
@@ -31,6 +31,7 @@ export class FlightPath {
   constructor() {
     this.sim = createShipState();
     this.posed = [];
+    this.acting = [];
     this.xs = new Float64Array(POINTS);
     this.ys = new Float64Array(POINTS);
     this.count = 0;
@@ -47,8 +48,9 @@ export class FlightPath {
    * Recomputes from predicted ship state `ship` (after the command for
    * `tick`), drawn at (x, y). `bodies` are the world's bodies posed for the
    * frame being drawn; the simulation poses its own copies per future tick.
+   * `fields` (singularities) pull too, if they are an enemy's (`team`, `selfId`).
    */
-  update(ship, st, bodies, tick, x, y) {
+  update(ship, st, bodies, tick, x, y, fields = [], team = -1, selfId = -1) {
     this.count = 0;
     this.contact = false;
     this.visible = false;
@@ -77,7 +79,7 @@ export class FlightPath {
     for (let i = 1; i <= HORIZON; i++) {
       const t = tick + i;
       const posed = poseBodies(bodies, t, this.posed);
-      stepShip(s, 0, 0, st, posed, t);
+      stepShip(s, 0, 0, st, posed, t, fields.length > 0 ? fieldsAt(fields, t, team, selfId, this.acting) : fields);
       let px = s.x;
       let py = s.y;
       if (frame >= 0) {

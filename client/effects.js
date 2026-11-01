@@ -76,6 +76,65 @@ export class Effects {
     }
   }
 
+  /** Afterburner: a streak of exhaust left behind as the ship kicks away. */
+  dash(x, y, vx, vy) {
+    const speed = Math.hypot(vx, vy) || 1;
+    const ux = -vx / speed;
+    const uy = -vy / speed;
+    for (let i = 0; i < 18; i++) {
+      const spread = (Math.random() - 0.5) * 0.6;
+      const s = 200 + Math.random() * 260;
+      const c = Math.cos(spread);
+      const sn = Math.sin(spread);
+      this.spawn(x, y, (ux * c - uy * sn) * s, (ux * sn + uy * c) * s, 0.3 + Math.random() * 0.2, i % 2 ? Color.CYAN : Color.WHITE, 0.05, 3);
+    }
+    this.ring(x, y, 10, 60, 0.25, Color.CYAN);
+  }
+
+  /** Ram drive ignition: a burst of flame from the engines and a shock ring ahead. */
+  ram(x, y, angle) {
+    const bx = x - Math.cos(angle) * 18;
+    const by = y - Math.sin(angle) * 18;
+    for (let i = 0; i < 22; i++) {
+      const a = angle + Math.PI + (Math.random() - 0.5) * 0.9;
+      const s = 150 + Math.random() * 250;
+      this.spawn(bx, by, Math.cos(a) * s, Math.sin(a) * s, 0.4 + Math.random() * 0.3, i % 3 ? Color.ORANGE : Color.GOLD, 0.05, 2);
+    }
+    this.ring(x, y, 20, 90, 0.3, Color.ORANGE, angle, 0.9, 4);
+  }
+
+  /** Repair pulse: a green wave out to the pulse's reach, with motes rising. */
+  pulse(x, y, range) {
+    this.ring(x, y, 20, range, 0.6, Color.GREEN, 0, Math.PI, 4);
+    this.ring(x, y, 10, range * 0.6, 0.5, Color.WHITE, 0, Math.PI, 2);
+    for (let i = 0; i < 24; i++) {
+      const a = Math.random() * TAU;
+      const s = 60 + Math.random() * 220;
+      this.spawn(x, y, Math.cos(a) * s, Math.sin(a) * s, 0.5 + Math.random() * 0.4, Color.GREEN, 0, 1);
+    }
+  }
+
+  /** A singularity forming: debris drawn inwards and a ring collapsing onto the core. */
+  singularity(x, y, range) {
+    this.ring(x, y, range, 30, 0.5, Color.VIOLET, 0, Math.PI, 4);
+    for (let i = 0; i < 30; i++) {
+      const a = Math.random() * TAU;
+      const d = range * (0.5 + Math.random() * 0.5);
+      const px = x + Math.cos(a) * d;
+      const py = y + Math.sin(a) * d;
+      const s = d * 2.2;
+      this.spawn(px, py, -Math.cos(a) * s, -Math.sin(a) * s, 0.4, i % 2 ? Color.VIOLET : Color.MAGENTA, 0.04, 0);
+    }
+  }
+
+  /** A teammate being repaired: green motes around them. */
+  heal(x, y) {
+    for (let i = 0; i < 5; i++) {
+      const a = Math.random() * TAU;
+      this.spawn(x + Math.cos(a) * 14, y + Math.sin(a) * 14, Math.cos(a) * 30, -60 - Math.random() * 40, 0.5, Color.GREEN, 0, 0);
+    }
+  }
+
   /** Flames licking off a ship touching the star. */
   burn(x, y) {
     for (let i = 0; i < 3; i++) {

@@ -2,8 +2,9 @@
  * Server-only gameplay tuning. Durations are in ticks (use `seconds()`),
  * distances in world units, speeds in units per second.
  */
-import { BLAST_HALF_ANGLE, BLAST_RANGE, TICK_RATE } from '../../shared/constants.js';
+import { BLAST_HALF_ANGLE, BLAST_RANGE, FLARE_REACH, FLARE_SHADOW_MARGIN, ROUND_WIN_SCORE, TICK_RATE } from '../../shared/constants.js';
 import { GRAVITY } from '../../shared/gravity.js';
+import { CLASSES, ShipClass } from '../../shared/stats.js';
 
 export const seconds = (s) => Math.round(s * TICK_RATE);
 
@@ -119,6 +120,68 @@ export const BLAST = Object.freeze({
   creditWindow: seconds(4), // a shoved rock that hits a ship this soon credits the shover
 });
 
+/* Teams and objectives ------------------------------------------------------- */
+
+/** Rounds: the first team to `winScore` (or the leader when time runs out) wins. */
+export const ROUND = Object.freeze({
+  winScore: ROUND_WIN_SCORE,
+  duration: seconds(12 * 60),
+  intermission: seconds(10),
+  killPoints: 10, // team points per enemy pilot destroyed
+  winBonus: 300, // score for every pilot on the winning team
+});
+
+/** Outposts sit on each planet's night side and grant their team a perk while held. */
+export const OUTPOST = Object.freeze({
+  captureTime: seconds(8), // for one pilot from neutral; more pilots capture faster (up to `maxCrew`)
+  maxCrew: 3,
+  decayTime: seconds(20), // an empty zone drifts back to its owner (or to neutral) this slowly
+  pointsPerSecond: 2, // team points per held outpost
+  captureScore: 120, // score for each pilot in the zone when it flips
+  holdScore: 2, // score per second for each pilot holding their own outpost
+});
+
+/** Solar flares: telegraphed blasts from the star; planets cast safe shadows. */
+export const FLARE = Object.freeze({
+  firstDelay: seconds(70),
+  interval: [seconds(75), seconds(110)],
+  warning: seconds(6),
+  duration: seconds(1.5),
+  halfWidth: [0.42, 0.62], // radians
+  reach: FLARE_REACH,
+  damage: 1, // per tick, to everything exposed
+  shadowMargin: FLARE_SHADOW_MARGIN,
+});
+
+/** Nebulae: clouds that hide pilots from enemies beyond close range. */
+export const NEBULA = Object.freeze({
+  count: 5,
+  radius: [280, 420],
+  ring: [2950, 3750], // distance from the star: open space beyond the planets' orbits
+  reveal: 320, // enemies this close see you anyway
+  revealAfterFire: seconds(1.5), // shooting, blasting or using an ability gives you away
+});
+
+/** Class ability effects resolved on the server. */
+export const ABILITY = Object.freeze({
+  ramSmash: 220, // damage to an asteroid the ram drive ploughs into (shatters any rock)
+  ramShipDamage: 34, // to an enemy rammed during the ram drive, scaled by impact speed
+  ramMass: 8, // the Breaker barrels through while ramming
+  breakerRockShield: 0.5, // share of asteroid contact damage a Breaker takes normally (none while ramming)
+  breakerRamBonus: 2, // ram damage multiplier for Breakers
+  pulseRange: CLASSES[ShipClass.MEDIC].ability.range,
+  pulseHeal: 38,
+  pulseSelfHeal: 20,
+  healShotScale: 1.4, // a Medic's shot heals a teammate for this × its damage
+  auraRange: 330,
+  auraHealPerSecond: 5,
+  healScore: 0.5, // score per hit point healed
+  crushShips: 0.5, // singularity core damage per tick to enemy ships
+  crushRocks: 1.2,
+  crushAliens: 1,
+  maxFields: 8,
+});
+
 export const PICKUP = Object.freeze({
   orbLife: seconds(45),
   powerupLife: seconds(60),
@@ -145,6 +208,7 @@ export const REWARD = Object.freeze({
 });
 
 export const BOT = Object.freeze({
+  classWeights: [0.4, 0.2, 0.2, 0.2], // Fighter, Breaker, Medic, Graviton
   // Skill mix: most bots are beatable rookies, a few aces play at full strength.
   // Skill 0.5 and above plays exactly as before; below it, aim, leading,
   // reactions, aggression and trigger discipline all get worse.

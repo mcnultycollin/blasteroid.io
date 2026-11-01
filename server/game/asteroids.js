@@ -21,7 +21,7 @@ export function updateAsteroids(game) {
       orbitState(planets[a.orbit.planet], a.orbit, game.tick, a);
       continue;
     }
-    const inWell = stepBallistic(a, planets);
+    const inWell = stepBallistic(a, planets, game.activeFields);
     if (inWell !== a.streamed) {
       a.streamed = inWell; // clients switch between streaming and straight-line extrapolation
       a.version++;

@@ -1,16 +1,25 @@
 /**
  * Server-side bots that keep small rooms lively. Bots are ordinary players
  * whose commands come from a BotBrain instead of a socket, so they exercise
- * exactly the same movement, firing and upgrade code as humans.
+ * exactly the same movement, firing, ability and upgrade code as humans.
+ *
+ * In team games they play the objectives: they fight enemies they can see,
+ * capture and defend outposts, shelter from solar flares behind planets, heal
+ * teammates (Medics) and use their class abilities.
  */
-import { Button, EntityType, TICK_RATE, WORLD_SIZE } from '../../shared/constants.js';
+import { Button, EntityType, NO_TEAM, OUTPOST_RADIUS, RoundPhase, TICK_RATE, WORLD_SIZE } from '../../shared/constants.js';
 import { isStar } from '../../shared/gravity.js';
 import { TAU, angleDiff, clamp, interceptTime, lerp, normalizeAngle, wrapDelta } from '../../shared/math.js';
-import { STAT_MAX, Stat, WEAPON_CHOICES } from '../../shared/stats.js';
+import { exposedToFlare, nightSide, starOf } from '../../shared/terrain.js';
+import { Ability, CLASS_COUNT, SINGULARITY, STAT_MAX, Stat, WEAPON_CHOICES } from '../../shared/stats.js';
 import { Mask } from './entities.js';
 import { randomName } from './names.js';
+import { hiddenFrom, outpostPoint } from './objectives.js';
 import { chooseWeapon, upgradeStat } from './ships.js';
-import { BOT } from './tuning.js';
+import { allies, teamSizes } from './teams.js';
+import { ABILITY, BOT, FLARE } from './tuning.js';
+
+const spot = { x: 0, y: 0, nx: 0, ny: 0 };
 
 const nearby = [];
 const SENSE = Mask.SHIP | Mask.ALIEN | Mask.ASTEROID | Mask.PICKUP;
@@ -22,7 +31,17 @@ const BUILDS = [
   [Stat.ENGINE, Stat.HANDLING, Stat.RELOAD, Stat.DAMAGE, Stat.ENERGY, Stat.HULL, Stat.VELOCITY, Stat.REPAIR],
 ];
 
-const Mode = Object.freeze({ WANDER: 0, FARM: 1, FIGHT: 2, FLEE: 3, LOOT: 4 });
+const Mode = Object.freeze({ WANDER: 0, FARM: 1, FIGHT: 2, FLEE: 3, LOOT: 4, OBJECTIVE: 5, HEAL: 6 });
+
+/** Draws a ship class from BOT.classWeights. */
+export function drawClass(rng) {
+  let roll = rng();
+  for (let c = 0; c < CLASS_COUNT; c++) {
+    if (roll < BOT.classWeights[c]) return c;
+    roll -= BOT.classWeights[c];
+  }
+  return 0;
+}
 
 /** Draws a skill from BOT.skillTiers. */
 export function drawSkill(rng) {
@@ -56,6 +75,10 @@ export class BotBrain {
     this.paceMatch = 0.3 + skill * 0.7; // how well they keep pace with a moving target
     this.circleDir = rng() < 0.5 ? -1 : 1;
     this.blastAfter = 0;
+    this.abilityAfter = 0;
+    this.objectiveBias = 0.3 + rng() * 0.7; // how much they care about outposts over farming
+    this.objective = -1; // outpost index while playing the objective
+    this.shelter = null; // planet to hide behind during a solar flare
     this.build = BUILDS[Math.floor(rng() * BUILDS.length)];
     this.mode = Mode.WANDER;
     this.target = null;
@@ -72,8 +95,9 @@ export class BotBrain {
 
   /** Queues exactly one command for this tick, like a human client would. */
   update(game, player, ship) {
-    if ((game.tick + player.id) % BOT.thinkInterval === 0) this.think(game, ship);
-    this.act(game, ship);
+    const thinking = (game.tick + player.id) % BOT.thinkInterval === 0;
+    if (thinking) this.think(game, ship);
+    this.act(game, ship, thinking);
     this.seq++;
     player.lastInputSeq = this.seq;
     player.inputs.push(this.seq, this.buttons, this.aim);
@@ -90,12 +114,20 @@ export class BotBrain {
     let lootDist = Infinity;
     let danger = null;
     let dangerDist = Infinity;
+    let patient = null;
+    let patientNeed = 0.8; // Medics patch up teammates below 80% hull
     for (const e of nearby) {
       if (e === ship) continue;
       const dist = Math.hypot(wrapDelta(e.x - ship.x, WORLD_SIZE), wrapDelta(e.y - ship.y, WORLD_SIZE));
       switch (e.type) {
         case EntityType.SHIP:
-          if (e.invuln === 0 && !e.player.stealth && dist < this.aggroRange && dist < enemyDist) {
+          if (allies(e, ship)) {
+            const need = e.hp / e.maxHp;
+            if (ship.st.ability === Ability.PULSE && dist < 700 && need < patientNeed) {
+              patient = e;
+              patientNeed = need;
+            }
+          } else if (e.invuln === 0 && !e.player.stealth && !hiddenFrom(e, ship, ship.team) && dist < this.aggroRange && dist < enemyDist) {
             enemy = e;
             enemyDist = dist;
           }
@@ -127,14 +159,20 @@ export class BotBrain {
       }
     }
 
+    const objective = this.pickObjective(game, ship);
     if (enemy && ship.hp < ship.maxHp * 0.3 && this.skill > 0.4) this.setMode(game, Mode.FLEE, enemy);
+    else if (patient && (!enemy || patientNeed < 0.45)) this.setMode(game, Mode.HEAL, patient);
     else if (enemy) this.setMode(game, Mode.FIGHT, enemy);
     else if (loot) this.setMode(game, Mode.LOOT, loot);
-    else if (rock) this.setMode(game, Mode.FARM, rock);
+    else if (objective >= 0 && (!rock || this.rng() < this.objectiveBias)) {
+      this.setMode(game, Mode.OBJECTIVE, null);
+      this.objective = objective;
+    } else if (rock) this.setMode(game, Mode.FARM, rock);
     else {
       this.setMode(game, Mode.WANDER, null);
       this.wanderAngle += (this.rng() - 0.5) * 0.8;
     }
+    this.shelter = this.findShelter(game, ship);
     this.danger = dangerDist < 150 ? danger : null;
     // The body whose surface is closest, if any is near: the star needs a wider berth.
     this.planet = null;
@@ -155,6 +193,48 @@ export class BotBrain {
     if (ship.weaponChoice) chooseWeapon(ship, WEAPON_CHOICES[Math.floor(this.rng() * WEAPON_CHOICES.length)]);
   }
 
+  /**
+   * The outpost worth flying to: our own if the enemy is taking it, otherwise
+   * the nearest one we do not hold. -1 outside team rounds.
+   */
+  pickObjective(game, ship) {
+    const m = game.match;
+    if (!m.teams || ship.team === NO_TEAM || m.phase !== RoundPhase.PLAYING) return -1;
+    let best = -1;
+    let bestScore = Infinity;
+    for (let i = 0; i < m.outposts.length; i++) {
+      const o = m.outposts[i];
+      const ours = o.owner === ship.team;
+      const threatened = ours && (o.contested || (ship.team === 0 ? o.progress > -1 : o.progress < 1));
+      if (ours && !threatened) continue;
+      const p = outpostPoint(game, i, spot);
+      let score = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE));
+      if (threatened) score *= 0.5; // defending comes first
+      if (score < bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /** During a flare warning: the planet whose shadow to hide in, if we are exposed. */
+  findShelter(game, ship) {
+    const f = game.match.flare;
+    if (!f || game.tick < f.start - FLARE.warning || !exposedToFlare(game.planets, f, ship.x, ship.y, FLARE.reach + 300, -10)) return null;
+    let best = null;
+    let bestDist = Infinity;
+    for (const p of game.planets) {
+      if (isStar(p)) continue;
+      const d = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE));
+      if (d < bestDist) {
+        bestDist = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
   setMode(game, mode, target) {
     if (target !== this.target) this.fireAfter = game.tick + this.reaction;
     this.mode = mode;
@@ -166,7 +246,7 @@ export class BotBrain {
    * velocity controller: each mode picks a desired velocity and steer() fires
    * whichever thrusters close the gap, while the nose aims at the target.
    */
-  act(game, ship) {
+  act(game, ship, thinking = true) {
     let buttons = Button.AIM;
     let aim = ship.angle;
     let free = true; // no target needs the nose, so it can point where thrust is needed
@@ -174,7 +254,7 @@ export class BotBrain {
     let vx = 0; // desired velocity
     let vy = 0;
     const t = this.target;
-    if (t && (t.dead || (t.type === EntityType.SHIP && t.player.stealth))) {
+    if (t && (t.dead || (t.type === EntityType.SHIP && (t.player.stealth || (!allies(t, ship) && hiddenFrom(t, ship, ship.team)))))) {
       this.target = null;
       this.mode = Mode.WANDER;
     }
@@ -231,10 +311,46 @@ export class BotBrain {
           vy = uy * speed;
           break;
         }
+        case Mode.HEAL: {
+          // Medics repair with their shots: aim at the teammate from a short distance.
+          aim = Math.atan2(dy + (t.vy - ship.vy) * 0.2, dx + (t.vx - ship.vx) * 0.2);
+          free = false;
+          if (dist < 600 && Math.abs(angleDiff(aim, ship.angle)) < 0.15) buttons |= Button.FIRE;
+          const radial = clamp((dist - 240) * 1.5, -250, 250);
+          vx = ux * radial + t.vx;
+          vy = uy * radial + t.vy;
+          break;
+        }
       }
+    } else if (this.mode === Mode.OBJECTIVE && this.objective >= 0 && this.objective < game.match.outposts.length) {
+      // Hold position in the capture zone, moving with the outpost's planet.
+      const p = outpostPoint(game, this.objective, spot);
+      const planet = game.planets[game.terrain.outposts[this.objective].planet];
+      const dx = wrapDelta(p.x + p.nx * 70 - ship.x, WORLD_SIZE);
+      const dy = wrapDelta(p.y + p.ny * 70 - ship.y, WORLD_SIZE);
+      const dist = Math.hypot(dx, dy) || 1;
+      const speed = Math.min(360, dist * 1.4);
+      vx = planet.vx + (dx / dist) * speed;
+      vy = planet.vy + (dy / dist) * speed;
+      if (dist > 1600 && ship.energy > ship.st.energyMax * 0.7) boost = true;
+      if (dist < OUTPOST_RADIUS) aim = Math.atan2(p.ny, p.nx); // face out of the zone, towards attackers
     } else {
       vx = Math.cos(this.wanderAngle) * 220;
       vy = Math.sin(this.wanderAngle) * 220;
+    }
+    if (thinking) buttons |= this.ability(game, ship); // the checks scan nearby ships, so not every tick
+
+    // A solar flare is coming and we are in the open: get behind the nearest planet.
+    const shelter = this.shelter;
+    if (shelter) {
+      nightSide(starOf(game.planets), shelter, 110, spot);
+      const dx = wrapDelta(spot.x - ship.x, WORLD_SIZE);
+      const dy = wrapDelta(spot.y - ship.y, WORLD_SIZE);
+      const dist = Math.hypot(dx, dy) || 1;
+      const speed = Math.min(ship.st.boostSpeed, dist * 1.6);
+      vx = shelter.vx + (dx / dist) * speed;
+      vy = shelter.vy + (dy / dist) * speed;
+      boost = dist > 500;
     }
 
     // Get out of the way of a rock about to hit us, or blast it aside.
@@ -306,6 +422,60 @@ export class BotBrain {
     return buttons;
   }
 
+  /**
+   * The ABILITY button when the class ability would pay off right now.
+   * Skilled bots take nearly every good chance; rookies hesitate and miss some.
+   */
+  ability(game, ship) {
+    if (game.tick < this.abilityAfter || ship.abilityCooldown > 0 || ship.energy < ship.st.abilityCost + 30) return 0;
+    const t = this.target;
+    const enemy = t && !t.dead && this.mode === Mode.FIGHT ? t : null;
+    let use = false;
+    switch (ship.st.ability) {
+      case Ability.DASH: // dodge sideways when an enemy is close
+        use = enemy !== null && dist(ship, enemy) < 320 && this.rng() < 0.04;
+        break;
+      case Ability.RAM: {
+        // Charge an enemy or a big rock roughly dead ahead.
+        const prey = enemy ?? (this.mode === Mode.FARM && t && !t.dead && t.size === 2 ? t : null);
+        if (prey) {
+          const a = Math.atan2(wrapDelta(prey.y - ship.y, WORLD_SIZE), wrapDelta(prey.x - ship.x, WORLD_SIZE));
+          use = dist(ship, prey) < 620 && Math.abs(angleDiff(a, ship.angle)) < 0.3;
+        }
+        break;
+      }
+      case Ability.PULSE: {
+        // Worth it once enough hull is missing around us (our own counts half).
+        let missing = (ship.maxHp - ship.hp) * 0.5;
+        for (const other of game.ships) {
+          if (other !== ship && !other.dead && allies(other, ship) && dist(ship, other) < ABILITY.pulseRange) missing += other.maxHp - other.hp;
+        }
+        use = missing >= 50;
+        break;
+      }
+      case Ability.SINGULARITY: {
+        // Drop it where it catches enemies: one close to the spot, or two around it.
+        const px = ship.x + Math.cos(ship.angle) * SINGULARITY.distance;
+        const py = ship.y + Math.sin(ship.angle) * SINGULARITY.distance;
+        let caught = 0;
+        for (const other of game.ships) {
+          if (other.dead || other === ship || allies(other, ship)) continue;
+          const d = Math.hypot(wrapDelta(other.x - px, WORLD_SIZE), wrapDelta(other.y - py, WORLD_SIZE));
+          if (d < 260) caught += 2;
+          else if (d < SINGULARITY.range * 0.8) caught++;
+        }
+        use = caught >= 2;
+        break;
+      }
+    }
+    if (!use) return 0;
+    this.abilityAfter = game.tick + Math.round(TICK_RATE * (2.5 - 2 * this.skill));
+    if (this.rng() > 0.35 + this.skill) return 0; // hesitated
+    let buttons = Button.ABILITY;
+    if (ship.st.ability === Ability.DASH) buttons |= this.rng() < 0.5 ? Button.STRAFE_LEFT : Button.STRAFE_RIGHT;
+    return buttons;
+  }
+
   /** The BLAST button, if this bot uses blasts, the nose points at `angle` and it can afford one. */
   blast(game, ship, angle) {
     if (!this.blaster || game.tick < this.blastAfter || ship.blastCooldown > 0) return 0;
@@ -314,6 +484,8 @@ export class BotBrain {
     return Button.BLAST;
   }
 }
+
+const dist = (a, b) => Math.hypot(wrapDelta(a.x - b.x, WORLD_SIZE), wrapDelta(a.y - b.y, WORLD_SIZE));
 
 /** True if `e` is within `margin` of a planet's or the star's surface. */
 function nearSurface(game, e, margin) {
@@ -371,10 +543,25 @@ export function maintainBots(game) {
   }
   const wanted = Math.max(0, game.botTarget - game.humanCount);
   for (; active < wanted; active++) {
-    const player = game.addPlayer(randomName(game.rng), true);
+    const player = game.addPlayer(randomName(game.rng), true, drawClass(game.rng));
     if (!player) break;
     player.brain = new BotBrain(game.rng);
     player.wantsSpawn = true;
   }
-  if (active > wanted && weakest) weakest.retiring = true;
+  if (active > wanted && weakest) {
+    weakest.retiring = true;
+    return;
+  }
+  // Keep teams even: a bot on the bigger team retires and the next check adds one to the smaller.
+  if (game.match.teams) {
+    const sizes = teamSizes(game);
+    const big = sizes[0] - sizes[1] >= 2 ? 0 : sizes[1] - sizes[0] >= 2 ? 1 : -1;
+    if (big >= 0) {
+      let pick = null;
+      for (const p of game.players.values()) {
+        if (p.isBot && !p.retiring && p.team === big && (!pick || (p.ship?.score ?? -1) < (pick.ship?.score ?? -1))) pick = p;
+      }
+      if (pick) pick.retiring = true;
+    }
+  }
 }

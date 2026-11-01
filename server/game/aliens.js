@@ -1,10 +1,11 @@
 /** Alien saucers, hunters and the mothership world event. */
-import { AlienKind, Announce, BulletKind, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
+import { AlienKind, Announce, BulletKind, NO_TEAM, RemoveReason, TICK_DT, WORLD_SIZE } from '../../shared/constants.js';
 import { applyGravity, collideBodies, isStar } from '../../shared/gravity.js';
 import { TAU, interceptTime, wrap, wrapDelta } from '../../shared/math.js';
 import { NO_ID } from '../../shared/protocol.js';
 import { damageAlien, damageAsteroid } from './combat.js';
 import { Mask } from './entities.js';
+import { hiddenFrom } from './objectives.js';
 import { findOpenSpot, spawnAlien, spawnBullet } from './spawning.js';
 import { ALIEN_SPAWN, MOTHERSHIP, PLANETS, seconds } from './tuning.js';
 
@@ -20,7 +21,7 @@ export function updateAliens(game) {
     if (al.contactCooldown > 0) al.contactCooldown--;
     if (--al.thinkCooldown <= 0) think(game, al);
 
-    const t = al.target && !al.target.dead && !al.target.player.stealth ? al.target : null;
+    const t = al.target && !al.target.dead && !al.target.player.stealth && !hiddenFrom(al.target, al, NO_TEAM) ? al.target : null;
     let desX;
     let desY;
     let dist = Infinity;
@@ -49,7 +50,10 @@ export function updateAliens(game) {
     al.vx += (desX * def.speed + al.avoidX - al.vx) * k;
     al.vy += (desY * def.speed + al.avoidY - al.vy) * k;
     const grounded = al.kind !== AlienKind.MOTHERSHIP; // the mothership flies above it all
-    if (grounded) applyGravity(al, game.planets);
+    if (grounded) {
+      applyGravity(al, game.planets);
+      if (game.activeFields.length > 0) applyGravity(al, game.activeFields);
+    }
     al.x = wrap(al.x + al.vx * TICK_DT, WORLD_SIZE);
     al.y = wrap(al.y + al.vy * TICK_DT, WORLD_SIZE);
     if (grounded && collideBodies(al, al.radius, game.planets, contact) > 0 && al.contactCooldown === 0) {
@@ -81,7 +85,7 @@ function think(game, al) {
   let bestScore = Infinity;
   const aggroSq = def.aggroRange * def.aggroRange;
   for (const s of game.ships) {
-    if (s.dead || s.player.stealth) continue;
+    if (s.dead || s.player.stealth || hiddenFrom(s, al, NO_TEAM)) continue;
     const dx = wrapDelta(s.x - al.x, WORLD_SIZE);
     const dy = wrapDelta(s.y - al.y, WORLD_SIZE);
     const d = dx * dx + dy * dy;

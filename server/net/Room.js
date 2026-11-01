@@ -2,7 +2,7 @@
  * Network glue around one Game: decodes client messages, broadcasts the
  * game's outbox and sends each session its snapshot.
  */
-import { BUTTON_MASK, Feature, KickReason, MarkerKind, PROTOCOL_VERSION, SNAPSHOT_INTERVAL, TICK_RATE } from '../../shared/constants.js';
+import { BUTTON_MASK, Feature, KickReason, MarkerKind, NO_TEAM, PROTOCOL_VERSION, SNAPSHOT_INTERVAL, TICK_RATE } from '../../shared/constants.js';
 import {
   BinaryReader,
   BinaryWriter,
@@ -31,7 +31,7 @@ export class Room {
   constructor(id, options) {
     this.id = id;
     this.options = options;
-    this.game = new Game({ seed: options.seed, botTarget: options.botTarget });
+    this.game = new Game({ seed: options.seed, botTarget: options.botTarget, teams: options.teams !== false });
     this.sessions = new Set();
     this.sessionsByPlayer = new Map(); // player id -> Session
     this.writer = new BinaryWriter(64 * 1024);
@@ -48,8 +48,8 @@ export class Room {
   attach(session) {
     this.sessions.add(session);
     session.room = this;
-    const features = this.options.devTools ? Feature.DEV_TOOLS : 0;
-    session.send(encodeWelcome(this.writer, this.game.tick, this.id, this.game.planets, features));
+    const features = (this.options.devTools ? Feature.DEV_TOOLS : 0) | (this.game.match.teams ? Feature.TEAMS : 0);
+    session.send(encodeWelcome(this.writer, this.game.tick, this.id, this.game.planets, features, this.game.terrain));
     const players = [...this.game.players.values()];
     for (let i = 0; i < players.length; i += 255) {
       session.send(encodeRoster(this.writer, players.slice(i, i + 255)));
@@ -84,9 +84,16 @@ export class Room {
         }
         break;
       }
-      case ClientMsg.JOIN:
-        this.join(session, r.u8(), sanitizeName(r.str()));
+      case ClientMsg.JOIN: {
+        const version = r.u8();
+        if (version !== PROTOCOL_VERSION) {
+          session.kick(KickReason.OUTDATED); // older clients lay the rest out differently
+          break;
+        }
+        const shipClass = r.u8();
+        this.join(session, shipClass, sanitizeName(r.str()));
         break;
+      }
       case ClientMsg.UPGRADE:
         if (player) game.upgrade(player, r.u8());
         break;
@@ -104,15 +111,11 @@ export class Room {
     }
   }
 
-  join(session, version, name) {
-    if (version !== PROTOCOL_VERSION) {
-      session.kick(KickReason.OUTDATED);
-      return;
-    }
+  join(session, shipClass, name) {
     const game = this.game;
     let player = session.player;
     if (!player) {
-      player = game.humanCount < this.options.maxPlayers ? game.addPlayer(name, false) : null;
+      player = game.humanCount < this.options.maxPlayers ? game.addPlayer(name, false, shipClass) : null;
       if (!player) {
         session.kick(KickReason.SERVER_FULL);
         return;
@@ -125,7 +128,7 @@ export class Room {
     } else {
       game.renamePlayer(player, name);
     }
-    game.requestSpawn(player);
+    game.requestSpawn(player, shipClass);
   }
 
   tick() {
@@ -173,13 +176,28 @@ export class Room {
     this.leader = ranked[0] ?? null;
     for (let i = 0; i < ranked.length; i++) ranked[i].rank = i + 1;
     const top = ranked.slice(0, LEADERBOARD_SIZE).map((s) => ({ playerId: s.playerId, score: s.score }));
-    const markers = [];
-    if (this.leader) markers.push({ kind: MarkerKind.LEADER, x: this.leader.x, y: this.leader.y });
-    if (game.mothership) markers.push({ kind: MarkerKind.MOTHERSHIP, x: game.mothership.x, y: game.mothership.y });
+    const shared = [];
+    if (game.mothership) shared.push({ kind: MarkerKind.MOTHERSHIP, x: game.mothership.x, y: game.mothership.y });
+    // Teammates appear on each other's minimaps; the leader's position only while it isn't hiding.
+    const byTeam = new Map();
+    const markersFor = (team) => {
+      let list = byTeam.get(team);
+      if (list) return list;
+      list = [...shared];
+      const leader = this.leader;
+      if (leader && (!leader.hidden || (team !== NO_TEAM && leader.team === team))) list.push({ kind: MarkerKind.LEADER, x: leader.x, y: leader.y });
+      if (team !== NO_TEAM) {
+        for (const s of game.ships) {
+          if (!s.dead && s.team === team && list.length < 64) list.push({ kind: MarkerKind.ALLY, x: s.x, y: s.y });
+        }
+      }
+      byTeam.set(team, list);
+      return list;
+    };
     for (const session of this.sessions) {
       const ship = session.player?.ship;
       const rank = ship && !ship.dead ? ship.rank : 0;
-      session.send(encodeLeaderboard(this.writer, game.players.size, rank, top, markers));
+      session.send(encodeLeaderboard(this.writer, game.players.size, rank, top, markersFor(session.player ? session.player.team : NO_TEAM)));
     }
   }
 }

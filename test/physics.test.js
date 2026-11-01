@@ -225,8 +225,9 @@ function randomCommands(seed, count) {
   const commands = [];
   for (let i = 0; i < count; i++) {
     // Mostly coasting with bursts of input; every button shows up, the lock toggle now and then.
-    let buttons = rng() < 0.4 ? 0 : Math.floor(rng() * (BUTTON_MASK + 1)) & ~Button.LOCK;
+    let buttons = rng() < 0.4 ? 0 : Math.floor(rng() * (BUTTON_MASK + 1)) & ~(Button.LOCK | Button.ABILITY);
     if (rng() < 0.02) buttons |= Button.LOCK;
+    if (rng() < 0.01) buttons |= Button.ABILITY;
     commands.push({ buttons, aim: dqAngle(qAngle(rng() * Math.PI * 2)) });
   }
   return commands;

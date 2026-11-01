@@ -3,6 +3,7 @@ import { BodyKind, Button } from '../shared/constants.js';
 import { createBody } from '../shared/gravity.js';
 import { TAU } from '../shared/math.js';
 import { Game } from '../server/game/Game.js';
+import { resetObjectives } from '../server/game/objectives.js';
 
 /** A star or planet fixed at (x, y). */
 export function fixedBody(id, x, y, radius, density, kind = BodyKind.ROCK, name = 'Test') {
@@ -14,11 +15,17 @@ export function orbitingBody(id, cx, cy, orbitRadius, period, radius, density, p
   return createBody(id, kind, radius, density, 'Mover', { cx, cy, radius: orbitRadius, phase, omega: TAU / period });
 }
 
-/** A game with no planets, asteroids, aliens or pickups, so tests control everything in it. */
-export function emptyGame(seed = 1) {
-  const game = new Game({ seed, botTarget: 0 });
+/**
+ * A game with no planets, terrain, asteroids, aliens or pickups, so tests
+ * control everything in it. Free-for-all unless `teams` is set.
+ */
+export function emptyGame(seed = 1, { teams = false } = {}) {
+  const game = new Game({ seed, botTarget: 0, teams });
   game.nextMothershipTick = Infinity;
+  game.nextFlareTick = Infinity;
   game.planets = []; // tests that need gravity add their own planet
+  game.terrain = { outposts: [], nebulae: [] };
+  resetObjectives(game);
   clearWorld(game);
   return game;
 }
@@ -31,9 +38,9 @@ export function clearWorld(game) {
   game.rebuildGrid();
 }
 
-/** Adds a human player and spawns their ship at (x, y), facing `angle`, without spawn protection. */
-export function addShip(game, name = 'Pilot', x = 1000, y = 1000, angle = 0) {
-  const player = game.addPlayer(name, false);
+/** Adds a human player and spawns their ship (of `shipClass`) at (x, y), facing `angle`, without spawn protection. */
+export function addShip(game, name = 'Pilot', x = 1000, y = 1000, angle = 0, shipClass = 0) {
+  const player = game.addPlayer(name, false, shipClass);
   game.requestSpawn(player);
   game.step();
   const ship = player.ship;

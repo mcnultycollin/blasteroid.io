@@ -11,8 +11,12 @@ import {
   BulletKind,
   Button,
   EntityType,
+  FLARE_REACH,
+  FLARE_SHADOW_MARGIN,
+  NO_TEAM,
+  OUTPOST_RADIUS,
+  Perk,
   PickupKind,
-  SHIP_RADIUS,
   ShipFlag,
   VIEW_HEIGHT,
   VIEW_WIDTH,
@@ -20,8 +24,10 @@ import {
 } from '../shared/constants.js';
 import { GRAVITY, pullAt } from '../shared/gravity.js';
 import { TAU, createRng, wrapDelta } from '../shared/math.js';
-import { Weapon } from '../shared/stats.js';
+import { CLASSES, ShipClass, Weapon } from '../shared/stats.js';
+import { nightSide, starOf } from '../shared/terrain.js';
 import { Flight } from './flightpath.js';
+import { TEAM_HUES } from './world.js';
 
 const FONT = 'ui-monospace, Menlo, Consolas, monospace';
 const STAR_TILE = 512;
@@ -88,6 +94,104 @@ export function playerColor(hue, lightness = 65) {
   return `hsl(${hue} 90% ${lightness}%)`;
 }
 
+export const teamColor = (team, lightness = 62) => (team === NO_TEAM ? '#cfd6e6' : `hsl(${TEAM_HUES[team]} 92% ${lightness}%)`);
+const PERK_LABELS = { [Perk.FORGE]: 'FORGE', [Perk.REFINERY]: 'REFINERY', [Perk.SHIPYARD]: 'SHIPYARD' };
+
+/**
+ * Traces a ship class's hull (nose along +x) at radius `r`, ready to fill and
+ * stroke. Fighter: the classic notched dart. Breaker: an armoured wedge.
+ * Medic: a slim dart with swept wings. Graviton: a ring with a prow.
+ */
+export function traceHull(ctx, shipClass, r) {
+  ctx.beginPath();
+  switch (shipClass) {
+    case ShipClass.BREAKER:
+      ctx.moveTo(1.2 * r, 0);
+      ctx.lineTo(0.55 * r, -0.82 * r);
+      ctx.lineTo(-0.85 * r, -0.85 * r);
+      ctx.lineTo(-0.6 * r, -0.3 * r);
+      ctx.lineTo(-0.6 * r, 0.3 * r);
+      ctx.lineTo(-0.85 * r, 0.85 * r);
+      ctx.lineTo(0.55 * r, 0.82 * r);
+      break;
+    case ShipClass.MEDIC:
+      ctx.moveTo(1.3 * r, 0);
+      ctx.lineTo(0.2 * r, -0.5 * r);
+      ctx.lineTo(-0.55 * r, -0.98 * r);
+      ctx.lineTo(-0.88 * r, -0.36 * r);
+      ctx.lineTo(-0.88 * r, 0.36 * r);
+      ctx.lineTo(-0.55 * r, 0.98 * r);
+      ctx.lineTo(0.2 * r, 0.5 * r);
+      break;
+    case ShipClass.GRAVITON:
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU;
+        const k = i === 0 ? 1.35 : 0.85;
+        if (i === 0) ctx.moveTo(Math.cos(a) * k * r, Math.sin(a) * k * r);
+        else ctx.lineTo(Math.cos(a) * k * r, Math.sin(a) * k * r);
+      }
+      break;
+    default:
+      ctx.moveTo(1.35 * r, 0);
+      ctx.lineTo(-r, -0.9 * r);
+      ctx.lineTo(-0.55 * r, 0);
+      ctx.lineTo(-r, 0.9 * r);
+  }
+  ctx.closePath();
+}
+
+/** Class markings drawn over the hull: ram plate, repair cross, gravity core. */
+export function traceHullDetails(ctx, shipClass, r, time = 0) {
+  ctx.beginPath();
+  switch (shipClass) {
+    case ShipClass.BREAKER:
+      ctx.moveTo(0.5 * r, -0.52 * r);
+      ctx.lineTo(0.92 * r, 0);
+      ctx.lineTo(0.5 * r, 0.52 * r);
+      break;
+    case ShipClass.MEDIC:
+      ctx.moveTo(-0.28 * r, 0);
+      ctx.lineTo(0.34 * r, 0);
+      ctx.moveTo(0.03 * r, -0.31 * r);
+      ctx.lineTo(0.03 * r, 0.31 * r);
+      break;
+    case ShipClass.GRAVITON: {
+      const k = 0.38 + 0.06 * Math.sin(time * 5);
+      ctx.moveTo(k * r, 0);
+      ctx.arc(0, 0, k * r, 0, TAU);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Renders a nebula once into an offscreen canvas: overlapping soft puffs seeded by the nebula. */
+function nebulaImage(n) {
+  const scale = 0.5; // pixels per world unit: clouds are soft, so half resolution is plenty
+  const size = Math.ceil(n.radius * 2.3 * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const rng = createRng(n.seed);
+  const c = size / 2;
+  const hues = [265, 285, 205, 320];
+  for (let i = 0; i < 26; i++) {
+    const a = rng() * TAU;
+    const d = Math.sqrt(rng()) * n.radius * 0.7 * scale;
+    const r = (0.25 + rng() * 0.35) * n.radius * scale;
+    const x = c + Math.cos(a) * d;
+    const y = c + Math.sin(a) * d;
+    const hue = hues[Math.floor(rng() * hues.length)];
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `hsla(${hue} 70% 55% / 0.16)`);
+    g.addColorStop(1, `hsla(${hue} 70% 40% / 0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  return canvas;
+}
+
 function makeStarTile(layer, seed) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = STAR_TILE;
@@ -118,6 +222,7 @@ export class Renderer {
     this.camX = 0;
     this.camY = 0;
     this.offset = { x: 0, y: 0 };
+    this.point = { x: 0, y: 0, nx: 0, ny: 0 };
     this.resize();
     addEventListener('resize', () => this.resize());
   }
@@ -144,8 +249,9 @@ export class Renderer {
 
   /**
    * Draws a frame. `view` carries: camX, camY, shakeX, shakeY, world, self
-   * (own ship render state or null), effects, time (seconds), flight (the
-   * own ship's FlightPath, or null) and lock ({body, radius, dir} or null).
+   * (own ship render state or null), effects, time (seconds), tick (the
+   * present, in server ticks), flight (the own ship's FlightPath, or null)
+   * and lock ({body, radius, dir} or null).
    */
   draw(view) {
     const { ctx, dpr, scale } = this;
@@ -197,16 +303,218 @@ export class Renderer {
     for (const g of world.ghosts) if (g.visible && this.cull(g, 10)) bullets.mine.push(g);
 
     const focus = view.flight && view.flight.state !== Flight.FREE ? view.flight : null;
+    if (world.match?.flare) this.drawFlare(world, world.match.flare, view.tick, view.time);
     this.drawWells(world.planets, view.time, focus);
+    this.drawFields(world, view.tick, view.time);
     if (view.flight?.visible) this.drawFlight(view.flight, view.lock, view.time);
     this.drawBodies(world.planets, view.time);
+    this.drawOutposts(world, view.time);
     this.drawPickups(pickups, view.time);
     this.drawAsteroids(asteroids);
     this.drawBullets(bullets);
     for (const al of aliens) this.drawAlien(al, view.time);
     for (const s of ships) this.drawShip(s, world, view.time, false);
     if (view.self) this.drawShip(view.self, world, view.time, true);
+    this.drawNebulae(world.nebulae);
     view.effects.draw(ctx, camX, camY, halfW, halfH);
+  }
+
+  /**
+   * Nebulae: soft clouds pre-rendered once each (at half resolution) and
+   * drawn over everything else, so ships inside look veiled.
+   */
+  drawNebulae(nebulae) {
+    const { ctx } = this;
+    for (const n of nebulae) {
+      const dx = wrapDelta(n.x - this.camX, WORLD_SIZE);
+      const dy = wrapDelta(n.y - this.camY, WORLD_SIZE);
+      if (Math.abs(dx) > this.halfW + n.radius * 1.2 || Math.abs(dy) > this.halfH + n.radius * 1.2) continue;
+      n.image ??= nebulaImage(n);
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(n.image, dx - n.radius * 1.15, dy - n.radius * 1.15, n.radius * 2.3, n.radius * 2.3);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /**
+   * Outposts on the planets' night sides: a beacon in its owner's colour and
+   * the capture zone, whose ring fills towards the team taking it and
+   * flashes while contested.
+   */
+  drawOutposts(world, time) {
+    const star = starOf(world.planets);
+    const m = world.match;
+    if (!star || !m) return;
+    const { ctx } = this;
+    for (let i = 0; i < world.outposts.length; i++) {
+      const def = world.outposts[i];
+      const planet = world.planets[def.planet];
+      const state = m.outposts[i];
+      if (!planet || !state) continue;
+      const p = nightSide(star, planet, 0, this.point);
+      const dx = wrapDelta(p.x - this.camX, WORLD_SIZE);
+      const dy = wrapDelta(p.y - this.camY, WORLD_SIZE);
+      if (Math.abs(dx) > this.halfW + OUTPOST_RADIUS || Math.abs(dy) > this.halfH + OUTPOST_RADIUS) continue;
+      const color = teamColor(state.owner);
+      ctx.setLineDash([6, 10]);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(dx, dy, OUTPOST_RADIUS, 0, TAU);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (state.progress !== 0) {
+        const start = Math.atan2(p.ny, p.nx);
+        ctx.strokeStyle = teamColor(state.progress < 0 ? 0 : 1);
+        ctx.globalAlpha = state.contested ? 0.5 + 0.5 * Math.sin(time * 14) : 0.9;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(dx, dy, OUTPOST_RADIUS, start, start + TAU * Math.abs(state.progress));
+        ctx.stroke();
+      }
+      if (state.contested) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = 0.4 + 0.4 * Math.sin(time * 14);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(dx, dy, OUTPOST_RADIUS + 8, 0, TAU);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // Beacon: a mast on the surface with a pulsing light
+      const tx = dx + p.nx * 34;
+      const ty = dy + p.ny * 34;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(dx - p.ny * 14, dy + p.nx * 14);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(dx + p.ny * 14, dy - p.nx * 14);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4 + i);
+      ctx.beginPath();
+      ctx.arc(tx, ty, 6, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      ctx.fillText(PERK_LABELS[def.perk] ?? '', dx + p.nx * 62, dy + p.ny * 62);
+    }
+  }
+
+  /**
+   * A solar flare: while it is coming, its wedge pulses and the planets'
+   * shadows (the safe zones) show as cones; while it burns, the wedge blazes
+   * and the shadows are the only dark places in it.
+   */
+  drawFlare(world, flare, tick, time) {
+    const star = starOf(world.planets);
+    if (!star) return;
+    const { ctx } = this;
+    const sx = wrapDelta(star.x - this.camX, WORLD_SIZE);
+    const sy = wrapDelta(star.y - this.camY, WORLD_SIZE);
+    const burning = tick >= flare.start;
+    const a0 = flare.angle - flare.halfWidth;
+    const a1 = flare.angle + flare.halfWidth;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.arc(sx, sy, FLARE_REACH, a0, a1);
+    ctx.closePath();
+    if (burning) {
+      const k = Math.max(0, 1 - (tick - flare.start) / Math.max(1, flare.end - flare.start));
+      ctx.fillStyle = `rgba(255, 214, 120, ${(0.18 + 0.22 * k).toFixed(3)})`;
+    } else {
+      ctx.fillStyle = `rgba(255, 140, 66, ${(0.05 + 0.05 * Math.sin(time * 8)).toFixed(3)})`;
+    }
+    ctx.fill();
+    ctx.clip();
+    ctx.fillStyle = burning ? 'rgba(0, 0, 0, 0.55)' : 'rgba(30, 60, 140, 0.25)';
+    for (const p of world.planets) {
+      if (p === star) continue;
+      const px = wrapDelta(p.x - star.x, WORLD_SIZE);
+      const py = wrapDelta(p.y - star.y, WORLD_SIZE);
+      const d = Math.hypot(px, py) || 1;
+      const r = p.radius + FLARE_SHADOW_MARGIN;
+      const nx = -py / d;
+      const ny = px / d;
+      const s1x = px + nx * r;
+      const s1y = py + ny * r;
+      const s2x = px - nx * r;
+      const s2y = py - ny * r;
+      const f1 = FLARE_REACH / Math.hypot(s1x, s1y);
+      const f2 = FLARE_REACH / Math.hypot(s2x, s2y);
+      ctx.beginPath();
+      ctx.moveTo(sx + s1x, sy + s1y);
+      ctx.lineTo(sx + s1x * f1, sy + s1y * f1);
+      ctx.lineTo(sx + s2x * f2, sy + s2y * f2);
+      ctx.lineTo(sx + s2x, sy + s2y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.strokeStyle = burning ? '#ffe08a' : '#ff8c42';
+    ctx.globalAlpha = burning ? 0.8 : 0.5 + 0.3 * Math.sin(time * 8);
+    ctx.lineWidth = 2;
+    ctx.setLineDash(burning ? [] : [18, 14]);
+    ctx.beginPath();
+    ctx.moveTo(sx + Math.cos(a0) * star.radius, sy + Math.sin(a0) * star.radius);
+    ctx.lineTo(sx + Math.cos(a0) * FLARE_REACH, sy + Math.sin(a0) * FLARE_REACH);
+    ctx.moveTo(sx + Math.cos(a1) * star.radius, sy + Math.sin(a1) * star.radius);
+    ctx.lineTo(sx + Math.cos(a1) * FLARE_REACH, sy + Math.sin(a1) * FLARE_REACH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
+  /** Graviton singularities: a dark core inside spiral arms winding inwards, in the owner's colour. */
+  drawFields(world, tick, time) {
+    const { ctx } = this;
+    for (const f of world.gravityFields) {
+      if (tick < f.born - 2 || tick >= f.expires) continue;
+      const dx = wrapDelta(f.x - this.camX, WORLD_SIZE);
+      const dy = wrapDelta(f.y - this.camY, WORLD_SIZE);
+      if (Math.abs(dx) > this.halfW + f.range || Math.abs(dy) > this.halfH + f.range) continue;
+      const fade = Math.max(0, Math.min(1, (tick - f.born + 2) / 12, (f.expires - tick) / 20));
+      const color = f.team === NO_TEAM ? '#b48cff' : teamColor(f.team, 66);
+      ctx.save();
+      ctx.translate(dx, dy);
+      ctx.globalAlpha = 0.25 * fade;
+      ctx.strokeStyle = color;
+      ctx.setLineDash([4, 12]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, f.range, 0, TAU);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.rotate(time * 3.2);
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.7 * fade;
+      ctx.beginPath();
+      for (let arm = 0; arm < 4; arm++) {
+        for (let k = 0; k <= 16; k++) {
+          const t = k / 16;
+          const r = f.radius + (f.range * 0.62 - f.radius) * t;
+          const a = (arm / 4) * TAU + t * 2.4;
+          if (k === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+          else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+      }
+      ctx.stroke();
+      ctx.globalAlpha = fade;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(0, 0, f.radius, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   /** Computes the camera-relative offset (dx, dy) and reports whether `e` is on screen. */
@@ -590,23 +898,41 @@ export class Renderer {
   }
 
   /**
-   * Ship as the classic notched triangle. `s` has dx, dy, ra, flags, hpFrac,
-   * playerId, level, weapon, and for our own ship `thrusters` (the reverse
-   * and lateral thruster buttons that are firing).
+   * A ship: its class's hull in its team's colour (our own outlined in
+   * white). `s` has dx, dy, ra, flags, hpFrac, playerId, level, weapon, and
+   * for our own ship `thrusters` (the reverse and lateral thruster buttons
+   * that are firing) and `shipClass`.
    */
   drawShip(s, world, time, mine) {
     const { ctx } = this;
-    const r = SHIP_RADIUS;
+    const shipClass = mine ? s.shipClass : world.playerClass(s.playerId);
+    const r = (CLASSES[shipClass] ?? CLASSES[0]).radius;
     const hue = world.playerHue(s.playerId);
     const color = mine ? '#ffffff' : playerColor(hue);
     const blink = s.flags & ShipFlag.INVULN && Math.floor(time * 8) % 2 === 0;
     const stealth = (s.flags & ShipFlag.STEALTH) !== 0;
+    const hidden = (s.flags & ShipFlag.HIDDEN) !== 0;
 
     ctx.save();
     ctx.translate(s.dx, s.dy);
     ctx.rotate(s.ra);
-    ctx.globalAlpha = blink ? 0.35 : stealth ? 0.5 : 1;
+    ctx.globalAlpha = blink ? 0.35 : stealth || hidden ? 0.45 : 1;
     if (stealth) ctx.setLineDash([5, 4]);
+    if (s.flags & ShipFlag.ABILITY) {
+      // Ram drive: a blazing shield over the prow and a long burn behind
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.45, -1, 1);
+      ctx.strokeStyle = '#ffb347';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-0.7 * r, -0.4 * r);
+      ctx.lineTo(-(2.6 + Math.random()) * r, 0);
+      ctx.lineTo(-0.7 * r, 0.4 * r);
+      ctx.strokeStyle = '#ff8c42';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
     if (s.flags & ShipFlag.THRUST) {
       const boost = (s.flags & ShipFlag.BOOST) !== 0;
       const len = (boost ? 2.2 : 1.5) + Math.random() * 0.4;
@@ -640,16 +966,14 @@ export class Renderer {
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-    ctx.beginPath();
-    ctx.moveTo(1.35 * r, 0);
-    ctx.lineTo(-r, -0.9 * r);
-    ctx.lineTo(-0.55 * r, 0);
-    ctx.lineTo(-r, 0.9 * r);
-    ctx.closePath();
-    ctx.fillStyle = s.hitFlash > 0 ? `rgba(255,255,255,${0.6 * s.hitFlash})` : mine ? 'rgba(92,242,255,0.12)' : playerColor(hue, 30);
+    traceHull(ctx, shipClass, r);
+    ctx.fillStyle = s.hitFlash > 0 ? `rgba(255,255,255,${0.6 * s.hitFlash})` : mine ? `hsla(${hue} 90% 60% / 0.2)` : playerColor(hue, 30);
     ctx.fill();
     ctx.strokeStyle = color;
     ctx.lineWidth = 2.4;
+    ctx.stroke();
+    traceHullDetails(ctx, shipClass, r, time);
+    ctx.lineWidth = 2;
     ctx.stroke();
     if (s.weapon !== Weapon.BLASTER) {
       ctx.beginPath();
