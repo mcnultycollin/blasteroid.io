@@ -58,8 +58,7 @@ export function updateAliens(game) {
     al.y = wrap(al.y + al.vy * TICK_DT, WORLD_SIZE);
     if (grounded && collideBodies(al, al.radius, game.planets, contact) > 0 && al.contactCooldown === 0) {
       if (isStar(contact.body)) {
-        al.contactCooldown = PLANETS.burnInterval;
-        damageAlien(game, al, PLANETS.starBurn, null);
+        damageAlien(game, al, al.hp, null); // the star destroys saucers outright too
       } else if (contact.impact > PLANETS.crashSafeSpeed) {
         al.contactCooldown = seconds(0.5);
         damageAlien(game, al, (contact.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage, null);

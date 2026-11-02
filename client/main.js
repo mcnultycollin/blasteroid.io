@@ -26,8 +26,6 @@ import {
   PickupKind,
   RemoveReason,
   RoundPhase,
-  SHIP_NOSE,
-  SHIP_RADIUS,
   ShipFlag,
   TICK_MS,
   TICK_RATE,
@@ -46,6 +44,7 @@ import { Input } from './input.js';
 import { Connection } from './net.js';
 import { Predictor } from './prediction.js';
 import { Renderer, playerColor } from './renderer.js';
+import { MULTI_NAMES, STREAK_NAMES, StreakTracker } from './streaks.js';
 import { Ui } from './ui.js';
 import { ClientWorld, TEAM_NAMES } from './world.js';
 
@@ -65,6 +64,8 @@ const PERK_TEXT = {
   [Perk.SHIPYARD]: 'Shipyard: your team respawns on this outpost',
 };
 const PULSE_RANGE = CLASSES[ShipClass.MEDIC].ability.range;
+const LOW_FUEL = 0.2; // share of the tank that triggers the low-fuel warning
+const WELL_LOOKAHEAD_S = 3; // the flight path is computed when a well is this many seconds away
 const KICK_MESSAGES = {
   [KickReason.SERVER_FULL]: 'Server is full. Try again in a moment.',
   [KickReason.OUTDATED]: 'A new version is available. Refresh the page to play.',
@@ -82,8 +83,12 @@ class GameClient {
     this.sound = new Sound();
     this.predictor = new Predictor();
     this.world = new ClientWorld(this.worldEvents());
-    this.ui = new Ui({ play: (name) => this.play(name) });
+    this.ui = new Ui({
+      play: (name) => this.play(name),
+      thrusterMode: (mode) => this.input?.setThrusterMode(mode),
+    });
     this.input = new Input(this.canvas, this.inputActions());
+    this.input.setThrusterMode(this.ui.thrusters);
     this.net = new Connection(this.netHandlers());
 
     this.state = State.CONNECTING;
@@ -99,6 +104,7 @@ class GameClient {
     this.shipScreen = { x: innerWidth / 2, y: innerHeight / 2 };
     this.flight = new FlightPath();
     this.lockView = { body: null, radius: 0, dir: 1 };
+    this.reticleView = { x: 0, y: 0, ready: false, color: '#fff' };
     this.shots = [];
     this.acc = 0;
     this.last = performance.now();
@@ -110,6 +116,9 @@ class GameClient {
     this.debug = null; // netgraph data while F3 is toggled on
     this.devTools = false; // server allows testing aids (stealth)
     this.teams = false; // team rounds (vs free-for-all)
+    this.trajectory = false; // full trajectory planner (T); otherwise the path shows only before a touchdown or crash
+    this.streaks = new StreakTracker();
+    this.fuelWarning = 0; // 0 fine, 1 low, 2 empty: the last fuel warning shown
     this.myTeam = NO_TEAM;
     this.flareBurned = -1; // start tick of the last flare whose burn we announced
     this.traffic = { at: performance.now(), bytes: 0, snapshots: 0, kbps: 0, snapshotsPerSecond: 0 };
@@ -142,6 +151,7 @@ class GameClient {
       },
       close: () => {
         this.world.reset();
+        this.streaks.clear(); // player ids are recycled: a new connection starts every streak afresh
         this.predictor.stop();
         this.input.enabled = false;
         this.state = State.CONNECTING;
@@ -172,7 +182,10 @@ class GameClient {
           if (p.id === this.myPlayerId) this.setMyTeam(p.team);
         }
       },
-      rosterRemove: (id) => this.world.roster.delete(id),
+      rosterRemove: (id) => {
+        this.world.roster.delete(id);
+        this.streaks.forget(id);
+      },
       leaderboard: (lb) => {
         this.hud.leaderboard = lb;
         if (this.state === State.MENU) this.ui.setStatus(`${lb.total} ${lb.total === 1 ? 'pilot' : 'pilots'} online`);
@@ -207,9 +220,15 @@ class GameClient {
       damaged: () => {},
       predictedImpact: (x, y) => this.effects.spark(x, y, Color.ORANGE),
       event: (ev) => this.onEvent(ev),
-      effect: (kind, x, y, angle) => this.playEffect(kind, x, y, angle, 0, 0, false),
+      effect: (kind, x, y, angle, sourceId) => this.playEffect(kind, x, y, angle, 0, 0, false, sourceId),
       match: (m, previous) => this.onMatch(m, previous),
     };
+  }
+
+  /** Muzzle distance of a known ship's class (for drawing its blast at its prow). */
+  noseOf(shipId) {
+    const e = this.world.entities.get(shipId);
+    return CLASSES[e ? this.world.playerClass(e.playerId) : 0].nose;
   }
 
   setMyTeam(team) {
@@ -221,16 +240,18 @@ class GameClient {
    * Draws and plays a blast or class ability. Our own are predicted and
    * played the moment the key is pressed; others' arrive as effects.
    */
-  playEffect(kind, x, y, angle, vx, vy, mine) {
+  playEffect(kind, x, y, angle, vx, vy, mine, source = NO_ID) {
     const fx = this.effects;
     const c = Math.cos(angle);
     const sn = Math.sin(angle);
     switch (kind) {
-      case FxKind.BLAST:
-        fx.blast(x + c * SHIP_NOSE, y + sn * SHIP_NOSE, angle, BLAST_RANGE, BLAST_HALF_ANGLE, vx, vy);
+      case FxKind.BLAST: {
+        const nose = mine ? this.predictor.st.nose : this.noseOf(source);
+        fx.blast(x + c * nose, y + sn * nose, angle, BLAST_RANGE, BLAST_HALF_ANGLE, vx, vy);
         this.sound.blast(x, y, mine);
         if (mine) fx.addShake(5);
         return;
+      }
       case FxKind.DASH:
         fx.dash(x, y, mine ? vx : c, mine ? vy : sn);
         this.sound.ability(Ability.DASH, x, y, mine);
@@ -296,8 +317,6 @@ class GameClient {
       this.ui.hideDeath();
       clearTimeout(this.deathTimer);
       this.cam.leadX = this.cam.leadY = 0;
-      this.lastLevel = 0;
-      this.hadWeaponChoice = false;
     } else {
       p.reconcile(s);
     }
@@ -309,6 +328,8 @@ class GameClient {
   }
 
   onStats(s, tick) {
+    // Stats arrive before the self block, so a new life is recognised by its spawn tick.
+    const newLife = !this.stats || this.stats.spawnTick !== s.spawnTick;
     this.stats = {
       score: s.score,
       kills: s.kills,
@@ -325,11 +346,11 @@ class GameClient {
     };
     this.predictor.setStats(s);
     const now = performance.now();
-    if (this.lastLevel && s.level > this.lastLevel) {
+    if (!newLife && s.level > this.lastLevel) {
       this.hud.announce(`LEVEL ${s.level}`, s.points > 0 ? 'Upgrade with 1-8' : '', '#ffd166', now);
       this.sound.levelUp();
     }
-    if (s.weaponChoice && !this.hadWeaponChoice) {
+    if (!newLife && s.weaponChoice && !this.hadWeaponChoice) {
       this.hud.announce('NEW WEAPON', 'Choose one with Z / X / C', '#ffd166', now);
     }
     this.lastLevel = s.level;
@@ -352,7 +373,8 @@ class GameClient {
     const x = p.renderX(this.alpha);
     const y = p.renderY(this.alpha);
     this.effects.explosion(x, y, 1.4, Color.WHITE);
-    this.effects.addShake(14);
+    if (d.cause === KillCause.STAR) this.effects.supernova(x, y);
+    this.effects.addShake(d.cause === KillCause.STAR ? 18 : 14);
     this.sound.explosion(2, x, y);
     this.sound.setThrust(false, false);
     p.stop();
@@ -426,8 +448,37 @@ class GameClient {
     }
     const now = performance.now();
     this.hud.addKill(parts, now);
-    if (k.killerId === this.myPlayerId && k.victimId !== this.myPlayerId) {
-      this.hud.announce('KILL', w.playerName(k.victimId), '#ff4d4d', now);
+    if (k.cause === KillCause.STAR && k.victimId !== this.myPlayerId) this.starDeath(k.victimId);
+    this.announceStreaks(k, name, text, now);
+  }
+
+  /** Another pilot swallowed by the star: a fireball where their ship is drawn. */
+  starDeath(playerId) {
+    for (const e of this.world.entities.values()) {
+      if (e.type !== EntityType.SHIP || e.playerId !== playerId) continue;
+      this.effects.supernova(e.rx, e.ry);
+      this.sound.explosion(2.5, e.rx, e.ry);
+      this.shakeNear(e.rx, e.ry, 12);
+      return;
+    }
+  }
+
+  /** Kill confirmations, multi-kills and streak call-outs (see StreakTracker). */
+  announceStreaks(k, name, text, now) {
+    const { streak, multi, ended } = this.streaks.record(k.killerId, k.victimId, now);
+    const mine = k.killerId === this.myPlayerId && k.victimId !== this.myPlayerId;
+    if (mine) {
+      const title = multi >= 2 ? (MULTI_NAMES[multi] ?? 'MULTI KILL') : 'KILL';
+      this.hud.announce(title, this.world.playerName(k.victimId), '#ff4d4d', now);
+      if (multi >= 2) this.sound.levelUp();
+    }
+    if (ended >= 3 && k.killerId !== NO_ID && k.killerId !== k.victimId) {
+      this.hud.addKill([name(k.killerId), text(' ended '), name(k.victimId), text(`'s ${ended}-kill streak`)], now);
+    }
+    const label = STREAK_NAMES.get(streak);
+    if (label) {
+      this.hud.addKill([name(k.killerId), text(` is on a ${label.toLowerCase()} (${streak})`)], now);
+      if (mine) this.hud.announce(label, `${streak} kills without dying`, '#ffd166', now);
     }
   }
 
@@ -557,6 +608,11 @@ class GameClient {
         }
         this.net.toggleStealth();
       },
+      toggleTrajectory: () => {
+        this.trajectory = !this.trajectory;
+        const sub = this.trajectory ? 'Your coasting path is always drawn in gravity wells' : 'The path shows only before a touchdown or crash';
+        this.hud.notice(`TRAJECTORY PLANNER ${this.trajectory ? 'ON' : 'OFF'} · ${sub}`, '#9fb3c8', performance.now());
+      },
       toggleDebug: () => {
         this.debug = this.debug ? null : {};
       },
@@ -631,6 +687,7 @@ class GameClient {
       }
     }
     if (result & StepResult.THRUST) this.exhaust(s, buttons, (result & StepResult.BOOST) !== 0);
+    this.checkFuel();
   }
 
   /** Our class ability fired (predicted): the effect plays at once, the server applies it. */
@@ -659,7 +716,13 @@ class GameClient {
     const c = Math.cos(s.angle);
     const sn = Math.sin(s.angle);
     const fx = this.effects;
-    const r = SHIP_RADIUS;
+    const r = this.predictor.st.radius;
+    const mx = (buttons & Button.MOVE_RIGHT ? 1 : 0) - (buttons & Button.MOVE_LEFT ? 1 : 0);
+    const my = (buttons & Button.MOVE_DOWN ? 1 : 0) - (buttons & Button.MOVE_UP ? 1 : 0);
+    if ((mx !== 0 || my !== 0) && Math.random() < 0.6) {
+      const a = Math.atan2(-my, -mx); // screen thrusters blow opposite their push
+      fx.exhaust(s.x + Math.cos(a) * r * 0.8, s.y + Math.sin(a) * r * 0.8, a, s.vx, s.vy, false, 0.8);
+    }
     if ((boost || buttons & Button.THRUST) && (boost || Math.random() < 0.6)) {
       fx.exhaust(s.x - c * r * 0.8, s.y - sn * r * 0.8, s.angle + Math.PI, s.vx, s.vy, boost);
     }
@@ -678,9 +741,49 @@ class GameClient {
     const p = this.predictor;
     const body = p.bodies[p.state.lockBody];
     const s = p.state;
-    this.effects.ring(s.x, s.y, 46, SHIP_RADIUS * 1.6, 0.35, Color.CYAN);
+    this.effects.ring(s.x, s.y, 46, p.st.radius * 1.6, 0.35, Color.CYAN);
     this.sound.lock(true);
     if (body) this.hud.notice(`ORBIT LOCKED · ${body.name.toUpperCase()}`, '#5cf2ff', performance.now());
+  }
+
+  /** Where the Graviton's singularity would form, and whether it is ready (see Renderer.drawReticle). */
+  reticle(sv) {
+    const p = this.predictor;
+    const r = this.reticleView;
+    r.x = sv.rx + Math.cos(sv.ra) * SINGULARITY.distance;
+    r.y = sv.ry + Math.sin(sv.ra) * SINGULARITY.distance;
+    r.ready = p.state.abilityCooldown === 0 && p.state.energy >= p.st.abilityCost;
+    r.color = playerColor(this.world.playerHue(this.myPlayerId));
+    return r;
+  }
+
+  /** True if a gravity well (or singularity) is within a few seconds' flight, so the path may bend. */
+  nearWell(s) {
+    const reach = Math.hypot(s.vx, s.vy) * WELL_LOOKAHEAD_S;
+    for (const list of [this.world.planets, this.world.gravityFields]) {
+      for (const b of list) {
+        const d = Math.hypot(wrapDelta(b.x - s.x, WORLD_SIZE), wrapDelta(b.y - s.y, WORLD_SIZE));
+        if (d < b.range + reach) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Warns once as the tank runs low and again when it runs dry. */
+  checkFuel() {
+    const p = this.predictor;
+    const frac = p.state.fuel / p.st.fuelMax;
+    const level = p.state.fuel === 0 ? 2 : frac < LOW_FUEL ? 1 : 0;
+    if (level > this.fuelWarning) {
+      const now = performance.now();
+      if (level === 2) {
+        this.hud.notice('OUT OF FUEL · reserve thrusters only: land on a planet to refuel', '#ff4d4d', now);
+        this.sound.denied();
+      } else {
+        this.hud.notice('LOW FUEL · land on a planet, reach your outpost or grab a fuel cell', '#ffb347', now);
+      }
+    }
+    this.fuelWarning = level;
   }
 
   firePredicted() {
@@ -689,14 +792,19 @@ class GameClient {
     const tick = p.commandTick(p.seq);
     const heavy = p.weapon === Weapon.CANNON;
     const kind = heavy ? BulletKind.CANNON : BulletKind.PLAYER;
-    for (let i = 0; i < n; i++) this.world.addGhost(p.seq, i, this.shots[i], kind, p.st.bulletLife, tick);
+    for (let i = 0; i < n; i++) {
+      // Leave the muzzle where the ship is drawn, even while a correction is still being blended out.
+      const ghost = this.world.addGhost(p.seq, i, this.shots[i], kind, p.st.bulletLife, tick);
+      ghost.offsetX = p.errorX;
+      ghost.offsetY = p.errorY;
+    }
     this.sound.fire(heavy, 0, 0, true);
   }
 
   render(now, dt) {
     const { world, predictor: p, renderer, cam } = this;
     this.effects.update(dt / 1000);
-    p.decayError(dt);
+    world.decayOffsets(p.decayError(dt));
     const renderTick = world.clock.renderTick(now, dt);
     // The present is our own ship's command time, between the last two predicted steps.
     const presentTick = p.active ? p.commandTick(p.seq - 1) + this.alpha : world.clock.serverTick(now);
@@ -719,6 +827,9 @@ class GameClient {
         (p.state.lockBody >= 0 ? ShipFlag.LOCKED : 0);
       sv.thrusters = local & StepResult.THRUST ? held & (Button.BACK | Button.STRAFE_LEFT | Button.STRAFE_RIGHT) : 0;
       sv.shipClass = p.st.shipClass;
+      sv.moveX = (held & Button.MOVE_RIGHT ? 1 : 0) - (held & Button.MOVE_LEFT ? 1 : 0);
+      sv.moveY = (held & Button.MOVE_DOWN ? 1 : 0) - (held & Button.MOVE_UP ? 1 : 0);
+      if (!(local & StepResult.THRUST)) sv.moveX = sv.moveY = 0;
       if (p.st.ability === Ability.RAM && p.state.abilityTime > 0) sv.flags |= ShipFlag.ABILITY;
       sv.playerId = this.myPlayerId;
       sv.level = this.stats?.level ?? 1;
@@ -746,7 +857,12 @@ class GameClient {
     let lock = null;
     if (selfView) {
       flight = this.flight;
-      flight.update(p.state, p.st, world.planets, p.commandTick(p.seq), selfView.rx, selfView.ry, world.gravityFields, this.myTeam, p.shipId);
+      if (this.nearWell(p.state)) {
+        flight.update(p.state, p.st, world.planets, p.commandTick(p.seq), selfView.rx, selfView.ry, world.gravityFields, this.myTeam, p.shipId);
+      } else {
+        flight.clear(); // no well within reach: nothing to plan
+      }
+      flight.shown = this.trajectory || flight.contact;
       const body = p.state.lockBody >= 0 ? world.planets[p.state.lockBody] : null;
       if (body) {
         lock = this.lockView;
@@ -781,6 +897,7 @@ class GameClient {
       tick: presentTick,
       flight,
       lock,
+      reticle: selfView && p.st.ability === Ability.SINGULARITY ? this.reticle(selfView) : null,
     });
     if (selfView) renderer.toScreen(selfView.rx, selfView.ry, cam.x, cam.y, this.shipScreen);
 
@@ -813,6 +930,10 @@ class GameClient {
       team: this.myTeam,
       teams: this.teams,
       perks: this.stats?.perks ?? 0,
+      fuel: p.active ? p.state.fuel : 0,
+      fuelMax: p.st.fuelMax,
+      refueling: p.active && (p.lastResult & StepResult.REFUEL) !== 0,
+      trajectory: this.trajectory,
       shipX: selfView ? selfView.rx : 0,
       shipY: selfView ? selfView.ry : 0,
       touchStick: this.input.touchMode && this.input.stick.id !== -1 ? this.input.stick : null,

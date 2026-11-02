@@ -42,9 +42,12 @@ export const SnapFlag = Object.freeze({ SELF: 1, STATS: 2, SPECTATE: 4, WORLD: 8
 /** Sentinel for "no entity / no player". Ids are allocated in 1..0xfffe. */
 export const NO_ID = 0xffff;
 
-const BULLET_FRESH = 0x40;
+// Projectile flags byte: kind in bits 0-1; for a projectile fired within the
+// last snapshot interval, its age in ticks + 1 in bits 2-4 (0 = older); own in bit 7.
+const BULLET_KIND_MASK = 0x03;
+const BULLET_AGE_SHIFT = 2;
+const BULLET_AGE_MAX = 6;
 const BULLET_OWN = 0x80;
-const BULLET_KIND_MASK = 0x3f;
 const ASTEROID_SIZE_MASK = 0x03;
 const ASTEROID_ORBIT = 0x04; // on a circular orbit: sent once as orbit parameters
 const ASTEROID_BALLISTIC = 0x08; // loose inside a gravity well: streamed every snapshot
@@ -247,9 +250,9 @@ export function encodeJoin(w, name, shipClass = 0) {
   return w.reset().u8(ClientMsg.JOIN).u8(PROTOCOL_VERSION).u8(shipClass).str(name).finish();
 }
 
-/** One input command: Button bits (u16) and a quantised aim angle. The count byte leaves room for batching. */
+/** One input command: Button bits (u32) and a quantised aim angle. The count byte leaves room for batching. */
 export function encodeInput(w, seq, buttons, aimQ) {
-  return w.reset().u8(ClientMsg.INPUT).u32(seq).u8(1).u16(buttons).u16(aimQ).finish();
+  return w.reset().u8(ClientMsg.INPUT).u32(seq).u8(1).u32(buttons).u16(aimQ).finish();
 }
 
 export function encodeUpgrade(w, stat) {
@@ -407,9 +410,11 @@ export function encodeKick(w, reason) {
  * u8   ServerMsg.SNAPSHOT
  * u32  tick
  * u8   SnapFlag bits
- * [SELF]      own ship, full precision (see writeSelf)
- * [STATS]     progression, sent only when changed (see writeStats)
+ * [STATS]     progression, sent only when changed (see SnapshotWriter.stats); before SELF,
+ *             so prediction derives the ship's new stats before replaying inputs
+ * [SELF]      own ship, full precision (see SnapshotWriter.self)
  * [SPECTATE]  u16 entity id, u16 x, u16 y: camera target while not playing
+ * [WORLD]     the match: round, team scores, outposts, solar flare (see SnapshotWriter.world), sent only when changed
  * u16  removal count, then { u16 id, u8 RemoveReason, [u16 collector id if COLLECTED] }
  * u16  entity count,  then { u8 EntityType, u16 id, payload }
  * u8   event count,   then { u8 EventKind, payload }      (this player's feedback)
@@ -448,6 +453,7 @@ export class SnapshotWriter {
       .f64(ship.vy)
       .f64(ship.angle)
       .u16(ship.energy)
+      .u16(ship.fuel)
       .u8(ship.cooldown)
       .u8(ship.boostLock)
       .u8(ship.blastCooldown)
@@ -506,8 +512,11 @@ export class SnapshotWriter {
     this.count++;
   }
 
-  /** `viewerShipId` marks the recipient's own projectiles; `tick` flags freshly fired ones. */
-  /** One entity record; `motionOnly` sends a known ship as a compact SHIP_MOTION update. */
+  /**
+   * One entity record. `viewerShipId` marks the recipient's own projectiles,
+   * `tick` flags freshly fired ones, and `motionOnly` sends a known ship as a
+   * compact SHIP_MOTION update.
+   */
   entity(e, viewerShipId, tick, motionOnly = false) {
     const w = this.w;
     w.u8(motionOnly ? SHIP_MOTION : e.type).u16(e.id);
@@ -532,13 +541,15 @@ export class SnapshotWriter {
       }
       case EntityType.BULLET: {
         const own = viewerShipId !== NO_ID && e.ownerId === viewerShipId;
-        const fresh = tick - e.spawnTick <= SNAPSHOT_INTERVAL;
+        // A fresh projectile carries its exact age, so clients start it at its muzzle at the tick it was fired.
+        const age = tick - e.spawnTick;
+        const ageBits = age <= SNAPSHOT_INTERVAL ? Math.min(age, BULLET_AGE_MAX) + 1 : 0;
         w.u16(e.ownerId)
           .u16(qPos(e.x))
           .u16(qPos(e.y))
           .i16(qVel(e.vx))
           .i16(qVel(e.vy))
-          .u8(e.kind | (fresh ? BULLET_FRESH : 0) | (own ? BULLET_OWN : 0))
+          .u8(e.kind | (ageBits << BULLET_AGE_SHIFT) | (own ? BULLET_OWN : 0))
           .u8(Math.min(255, e.life));
         if (own) w.u16(e.fireSeq & 0xffff).u8(e.muzzle);
         break;
@@ -678,8 +689,10 @@ export function readEntity(type, r, o) {
       o.vx = dqVel(r.i16());
       o.vy = dqVel(r.i16());
       const bits = r.u8();
+      const ageBits = (bits >> BULLET_AGE_SHIFT) & 0x07;
       o.kind = bits & BULLET_KIND_MASK;
-      o.fresh = (bits & BULLET_FRESH) !== 0;
+      o.fresh = ageBits > 0;
+      o.age = ageBits - 1; // ticks since it was fired, when fresh
       o.own = (bits & BULLET_OWN) !== 0;
       o.life = r.u8();
       if (o.own) {
@@ -716,6 +729,7 @@ function readSelf(r, o) {
   o.vy = r.f64();
   o.angle = r.f64();
   o.energy = r.u16();
+  o.fuel = r.u16();
   o.cooldown = r.u8();
   o.boostLock = r.u8();
   o.blastCooldown = r.u8();
@@ -815,8 +829,8 @@ export function readSnapshot(r, sink, scratch = { self: {}, stats: {}, world: {}
   const tick = r.u32();
   const flags = r.u8();
   sink.begin(tick);
-  if (flags & SnapFlag.SELF) sink.self(readSelf(r, scratch.self));
   if (flags & SnapFlag.STATS) sink.stats(readStats(r, scratch.stats));
+  if (flags & SnapFlag.SELF) sink.self(readSelf(r, scratch.self));
   if (flags & SnapFlag.SPECTATE) sink.spectate(r.u16(), dqPos(r.u16()), dqPos(r.u16()));
   if (flags & SnapFlag.WORLD) sink.world(readWorld(r, scratch.world ?? (scratch.world = {})));
   for (let n = r.u16(); n > 0; n--) {

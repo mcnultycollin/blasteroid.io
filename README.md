@@ -18,23 +18,37 @@ Requires Node.js 20 or newer. The only runtime dependency is
 | Action | Mouse + keyboard | Classic keys | Touch |
 | --- | --- | --- | --- |
 | Aim / turn | move the mouse | `←` `→` | drag left side |
-| Thrusters: forward, left, back, right | `W` `A` `S` `D` (right click: forward) | `↑` (forward) | drag left side (forward) |
+| Main engine (along the nose) | right click | `↑` | drag left side |
+| Thrusters: up, left, down, right on screen | `W` `A` `S` `D` | | |
 | Fire | left click or `Space` | `Space` | hold right side |
 | Retro brake | `Q` | `↓` | `BRAKE` button |
 | Boost | `Shift` | `Shift` | drag the stick far |
 | Class ability | `E` | `E` | ability button |
 | Kinetic blast | `P` | `P` | `BLAST` button |
 | Lock / release orbit | `L` | `L` | `LOCK` button |
+| Trajectory planner on / off | `T` | `T` | |
 | Upgrade a stat | `1`–`8` or click the panel | | tap the panel |
 | Choose a weapon (level 10) | `Z` `X` `C` or click | | tap a card |
 | Mute / netgraph | `M` / `F3` | | |
 | Hide from bots and aliens (testing) | `I` | | |
 
-- **Flight**: space has no drag. Your ship drifts until something changes its
-  course. The thrusters fire relative to your nose, so with the mouse aiming
-  you can strafe around a target, back off while shooting, or hold position
-  against a planet's pull. Thrusters cannot push you past cruise speed (boost
-  goes faster), but gravity can: dive past a planet to slingshot.
+- **Flight**: your ship drifts. With no thruster firing it slows to a coast
+  speed of about 40% of cruise within a second and then holds it; inside
+  gravity wells there is no drag at all, so orbits and slingshots behave like
+  real ones. `W` `A` `S` `D` push up, left, down and right on screen whichever
+  way the ship faces, so you can aim with the mouse and fly independently
+  (the menu has a setting to make them forward, left, back and right of the
+  ship instead). The main engine and boost push along the nose. Thrusters
+  cannot push you past cruise speed (boost goes faster), but gravity can: dive
+  past a planet to slingshot.
+- **Fuel**: every thruster burns fuel. A full tank lasts about 23 seconds of
+  main engine (12 boosting); side thrusters and the brake burn less. Land
+  gently on a planet to refuel (a full tank in about 2 seconds), hover in your
+  team's own outpost, or grab a fuel cell: amber canisters that float in open
+  space and drop from destroyed ships and large asteroids. On an empty tank
+  you cannot boost and the thrusters run at 20%: enough to limp to a planet,
+  not to climb out of a deep well. Abilities and the blast run on energy, not
+  fuel.
 
 - **Teams**: you join the smaller of two teams, *Helios* (orange) and
   *Polaris* (blue). Your shots pass through teammates and blasts never shove
@@ -61,15 +75,18 @@ Requires Node.js 20 or newer. The only runtime dependency is
   mass comes from its size × density, so the small core pulls hardest near
   its surface (sometimes harder than your engines; the HUD shows the pull as
   a share of your thrust). Each planet carries a belt of orbiting rocks.
-- **Orbits**: inside a well the well you are in lights up in the colour of
-  your path, which is drawn ahead of your ship: green for a stable orbit,
-  yellow for a gentle touchdown, red for a crash (with a countdown), white for
-  an escape. The readout above your hull bar shows altitude, periapsis and
-  apoapsis. Press `L` to lock into a circular orbit at your current altitude
-  and ride it hands-free while you fight; any thruster, the brake, a blast,
-  `L` again or a collision releases you. Land gently on a planet and you ride
-  along with it; crash fast and it hurts. The star burns anything that
-  touches it. Bodies block shots, so you can hide behind them.
+- **Orbits**: inside a well the readout above your hull bar shows where your
+  coasting path leads (stable orbit, touchdown, crash, escape), with altitude,
+  periapsis, apoapsis and the pull as a share of your thrust. When the path
+  ends on a surface it is drawn ahead of your ship, yellow for a gentle
+  touchdown and red for a crash, with a countdown. Press `T` for the full
+  trajectory planner, which always draws the path in a well (green for a
+  stable orbit, white for an escape). Press `L` to lock into a circular orbit
+  at your current altitude and ride it hands-free while you fight; any
+  thruster, the brake, a blast, `L` again or a collision releases you. Land
+  gently on a planet and you ride along with it (and refuel); crash fast and
+  it hurts. Touching the star destroys a ship outright, shields or not, in a
+  fireball. Bodies block shots, so you can hide behind them.
 - **Kinetic blast** (`P`): a cone of force from your nose that shoves rocks,
   ships and saucers away from you and kicks you backwards. It knocks belt
   rocks off their orbits into a planet, out of the well, or into an enemy,
@@ -79,9 +96,15 @@ Requires Node.js 20 or newer. The only runtime dependency is
 - **Aliens**: saucers spray shots, hunters lead their aim and go after
   leaders. Every few minutes a **Mothership** arrives with radial barrages
   and hunter escorts; destroying it pays out big.
-- **Dying** drops part of your score as orbs and credits your killer, including
-  if you are knocked into a rock shortly after a fight or disconnect mid-fight.
-  On the death screen you can switch ship class before flying again.
+- **Dying** drops part of your score as orbs and two fuel cells, and credits
+  your killer, including if you are knocked into a rock (or the star) shortly
+  after a fight or disconnect mid-fight. On the death screen you can switch
+  ship class before flying again. A new ship is protected for 3 seconds, or
+  until it fires, blasts or uses its ability.
+- **Kill streaks**: kills within 4 seconds of each other chain into double,
+  triple and multi kills, and 3, 5, 8 and 12 kills without dying are announced
+  to everyone (killing spree, rampage, unstoppable, godlike), as is the pilot
+  who ends a streak.
 
 ### Ship classes
 
@@ -94,7 +117,7 @@ chooses weapons the same way; they differ in hull, handling and one ability on
 | **Fighter** | dogfighter | 100% | 100% | 100% | *Afterburner*: an instant burst of speed towards the thrusters you hold (forward by default), past the cruise limit. Dodge, chase or escape. |
 | **Breaker** | rammer | 160%, big and heavy | 92% | 80%, slower fire | *Ram Drive*: a 1.2 s charge that lifts the speed limit to 1.8×. Shatters any asteroid it ploughs into, rams enemies for heavy damage and takes almost none. Breakers also shrug off half of normal rock damage. |
 | **Medic** | support | 90% | 106% | 65% | *Repair Pulse*: heals every teammate around you at once. Medic shots repair teammates they hit, and teammates near a Medic regenerate. Healing pays score. |
-| **Graviton** | controller | 120% | 90% | 85% | *Singularity*: a 4-second gravity well ahead of the nose that drags enemies (never teammates) and loose rocks in, rips belt rocks off their orbits and crushes whatever reaches its core. Pull defenders off an outpost, pile enemies up for your team, or drag them into the star. |
+| **Graviton** | controller | 120% | 90% | 85% | *Singularity*: a 4-second gravity well ahead of the nose (a reticle shows where it will form) that drags enemies (never teammates) and loose rocks in, rips belt rocks off their orbits and crushes whatever reaches its core. Pull defenders off an outpost, pile enemies up for your team, or drag them into the star. |
 
 ### Terrain objectives
 
@@ -106,8 +129,9 @@ chooses weapons the same way; they differ in hull, handling and one ability on
   second and grants its whole team a perk: the **Forge** on the dense core
   world (+15% weapon damage), the **Refinery** on the gas giant (+50% energy
   recharge) and the **Shipyard** on the rocky world (respawn landed on the
-  outpost). Getting there means flying into a gravity well, so orbits, locks
-  and landings all matter.
+  outpost). Your team's outposts also refuel you while you are in their zone.
+  Getting there means flying into a gravity well, so orbits, locks and
+  landings all matter.
 - **Solar flares**: every minute or two the star erupts in a wedge, announced
   6 seconds ahead with a countdown and a pulsing outline. Anything caught in
   the open is scorched (about 90 hull); planets cast safe shadows, drawn as
@@ -124,8 +148,13 @@ chooses weapons the same way; they differ in hull, handling and one ability on
 npm run dev               # restart the server on file changes
 npm test                  # unit + integration tests (node:test)
 npm run bench -- 60       # server cost per tick and snapshot size for 60 players
+TEAMS=0 npm run bench     # the same in free-for-all
 npm run lag -- 80 20      # play through 80 ms each way + 20 ms jitter at :3001/play
 ```
+
+[`docs/MECHANICS.md`](docs/MECHANICS.md) describes every mechanic in detail,
+with its numbers and where they live in the code, plus the netcode, known
+limitations and open design questions.
 
 There is no build step: the browser loads the ES modules in `client/` and
 `shared/` directly (with `modulepreload` hints). Press `F3` in game to see
@@ -156,21 +185,22 @@ client/                browser game: prediction, interpolation, rendering, HUD, 
 public/                landing page (/), game page (/play), static assets
 test/                  node:test suites
 scripts/               benchmark and lag proxy
+docs/MECHANICS.md      mechanics and netcode reference
 ```
 
 ## How the netcode works
 
 **Authoritative server, fixed timestep.** Each room simulates at 60 Hz. Clients
-send only inputs, as a button bitmask plus aim angle (9 bytes per command), and
+send only inputs, as a button bitmask plus aim angle (12 bytes per command), and
 never positions, so there is nothing to spoof. Each ship banks at most 16 input
 commands, refilled one per tick. That absorbs network jitter, but flooding
 commands can never move a ship faster than real time.
 
 **Client-side prediction.** Your ship runs the same `stepShip()` as the
-server, so input feels instant: thrusters, brake, orbit lock, the blast's
-recoil, the Fighter's afterburner and the Breaker's ram drive are all
-predicted, and every ability's effect and sound play the moment you press the
-key. Team perks that change your ship (the Refinery's energy recharge) reach
+server, so input feels instant: thrusters, brake, coasting drag, fuel burn and
+refuelling on a planet, orbit lock, the blast's recoil, the Fighter's
+afterburner and the Breaker's ram drive are all predicted, and every ability's
+effect and sound play the moment you press the key. Team perks that change your ship (the Refinery's energy recharge) reach
 your client in the stats block and are folded into the same derivation. Snapshots carry your ship's exact state
 after the last input the server applied. The client rewinds to that state and
 replays the inputs that are still unacknowledged. With no outside influence
@@ -185,8 +215,8 @@ lines, so they are extrapolated to the *present*, the moment your current
 input reaches the server. That keeps your shots and the rocks they hit
 consistent on screen. Your own shots appear the instant you fire. They are
 predicted and later matched to the server's projectiles by input sequence
-number. Other players' shots leave their muzzle and then catch up to the
-present.
+number. Other players' shots carry their exact age in ticks, so they leave
+the muzzle where their shooter is drawn and then catch up to the present.
 
 **Moving planets, exactly predicted.** The star and planets ride fixed
 circular orbits ("on rails"), so a body's position is an exact function of
@@ -240,27 +270,32 @@ using every class ability, blasts and thrusters:
 
 | Players | Simulation per tick | Snapshots per round | CPU (one core) | Snapshot size | Per-client downstream |
 | --- | --- | --- | --- | --- | --- |
-| 40 | 0.35 ms | 0.57 ms | 3.8% | 303 B | 8.9 KiB/s |
-| 80 | 0.69 ms | 1.80 ms | 9.5% | 554 B | 16.2 KiB/s |
-| 160 | 1.22 ms | 4.82 ms | 20% | 905 B | 26.5 KiB/s |
-| 320 | 2.84 ms | 14.8 ms | 62% | 1331 B | 39 KiB/s |
+| 40 | 0.42 ms | 0.57 ms | 4.2% | 317 B | 9.3 KiB/s |
+| 80 | 0.69 ms | 1.77 ms | 9.5% | 593 B | 17.4 KiB/s |
+| 160 | 1.43 ms | 5.71 ms | 26% | 1021 B | 29.9 KiB/s |
+| 320 | 3.16 ms | 18.3 ms | 74% | 1826 B | 53.5 KiB/s |
 
 Objectives concentrate the fighting: in team mode a pilot typically has about
 nine ships on screen, against two in a free-for-all, and ships are streamed
 every snapshot, so snapshots are larger than in free-for-all (`TEAMS=0`:
-about 130 B at 40 players). Rooms hold 40 humans by default.
+about 125 B at 40 players). Pilots also gather on planets and at outposts to
+refuel, which is why the crowded 320-player room costs more than it used to.
+Rooms hold 40 humans by default.
 
 **Room size and lag.** Players only receive what is on their screen, so
 per-player bandwidth depends on how crowded the arena is, not on how many
 people are in the room. Growing the arena with the player count keeps it flat.
-Measured with a 4× larger arena:
+Measured in free-for-all (`TEAMS=0`), with a 4× larger arena:
 
 | Arena | Players | CPU (one core) | Per-client downstream |
 | --- | --- | --- | --- |
-| 8192² | 40 | 2.8% | 3.4 KiB/s |
-| 16384² | 160 | 6.4% | 3.3 KiB/s |
-| 8192² | 80 | 6.5% | 4.8 KiB/s |
-| 16384² | 320 | 15% | 4.4 KiB/s |
+| 8192² | 40 | 3.8% | 3.6 KiB/s |
+| 16384² | 160 | 11% | 3.4 KiB/s |
+| 8192² | 80 | 8.1% | 5.1 KiB/s |
+| 16384² | 320 | 25% | 4.5 KiB/s |
+
+In team mode the objectives pull everyone to the planets whatever the arena's
+size, so a larger arena helps less there.
 
 Room size adds no latency until a room's work per tick approaches the
 16.7 ms tick budget. Before that, ping and the ~70 ms interpolation buffer
@@ -319,13 +354,16 @@ It's a development aid, so production servers ignore it unless `DEV_TOOLS=1`.
 - **Balance**: player-facing numbers (stats, weapons, levels) live in
   `shared/stats.js`, everything else in `server/game/tuning.js`.
 - **The solar system**: the star, planet sizes and densities, orbital periods,
-  belts, crash damage and the star's burn are in `PLANETS`
-  (`server/game/tuning.js`); the gravity law (strength, range, fade, landing
-  and crash speeds) is in `GRAVITY` (`shared/gravity.js`).
-- **Flight and abilities**: cruise and boost speeds, thruster strengths, the
-  brake and the blast's cost, cooldown and recoil are in `shared/stats.js`;
-  the blast's push is `BLAST` in `server/game/tuning.js`, its cone in
-  `shared/constants.js`.
+  belts and crash damage are in `PLANETS` (`server/game/tuning.js`); the
+  gravity law (strength, range, fade, landing and crash speeds) is in
+  `GRAVITY` (`shared/gravity.js`).
+- **Flight and abilities**: cruise and boost speeds, thruster strengths,
+  coasting drag, the brake and the blast's cost, cooldown and recoil are in
+  `BASE` (`shared/stats.js`); the blast's push is `BLAST` in
+  `server/game/tuning.js`, its cone in `shared/constants.js`.
+- **Fuel**: tank size, burn rates, refuelling on a planet and reserve power
+  are in `BASE` (`shared/stats.js`); fuel cells and outpost refuelling are
+  `FUEL` in `server/game/tuning.js`.
 - **Ship classes**: hulls, handling and abilities are in `CLASSES` and
   `SINGULARITY` (`shared/stats.js`); what abilities do to others is in
   `ABILITY` (`server/game/tuning.js`). A new class needs an entry there, a

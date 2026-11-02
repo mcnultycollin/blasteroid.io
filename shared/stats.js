@@ -24,7 +24,7 @@ export const STAT_MAX = 7; // upgrade levels per stat
 export const STAT_INFO = Object.freeze([
   { name: 'Hull', desc: 'Maximum hull integrity' },
   { name: 'Repair', desc: 'Hull regeneration' },
-  { name: 'Engines', desc: 'Thrust and top speed' },
+  { name: 'Engines', desc: 'Thrust, top speed and fuel tank' },
   { name: 'Handling', desc: 'Turn rate' },
   { name: 'Damage', desc: 'Projectile damage' },
   { name: 'Velocity', desc: 'Projectile speed and range' },
@@ -103,7 +103,8 @@ export const CLASS_COUNT = 4;
 export const Ability = Object.freeze({ DASH: 0, RAM: 1, PULSE: 2, SINGULARITY: 3 });
 
 /**
- * Ship classes: multipliers over the base stats, hull size and mass, and the
+ * Ship classes: multipliers over the base stats, hull size (`radius`), muzzle
+ * distance from the centre (`nose`, where the hull's prow ends), mass and the
  * class ability. Upgrades and weapons stack on top, so every class levels up
  * the same way but plays differently. An ability costs energy (shared with
  * boost and the blast) and then recharges for `cooldown` ticks.
@@ -113,28 +114,28 @@ export const CLASSES = Object.freeze([
     name: 'Fighter',
     role: 'Dogfighter',
     desc: 'Balanced and nimble. Afterburner: an instant burst of speed in the direction you are thrusting.',
-    hp: 1, regen: 1, thrust: 1, speed: 1, turn: 1, damage: 1, fireRate: 1, radius: 16, mass: 1,
+    hp: 1, regen: 1, thrust: 1, speed: 1, turn: 1, damage: 1, fireRate: 1, fuel: 1, radius: 16, nose: 21, mass: 1,
     ability: { name: 'Afterburner', cost: 120, cooldown: seconds(3.5), duration: seconds(0.25), impulse: 420 },
   },
   {
     name: 'Breaker',
     role: 'Rammer',
     desc: 'Heavy armoured hull. Ram drive: charge forward, smashing straight through asteroids and enemies.',
-    hp: 1.6, regen: 1.2, thrust: 0.95, speed: 0.92, turn: 0.78, damage: 0.8, fireRate: 0.8, radius: 21, mass: 3,
+    hp: 1.6, regen: 1.2, thrust: 0.95, speed: 0.92, turn: 0.78, damage: 0.8, fireRate: 0.8, fuel: 1.25, radius: 21, nose: 25, mass: 3,
     ability: { name: 'Ram Drive', cost: 200, cooldown: seconds(7), duration: seconds(1.2), impulse: 380, rushSpeed: 1.8 },
   },
   {
     name: 'Medic',
     role: 'Support',
     desc: 'Shots repair teammates and allies near you regenerate. Repair pulse: heals every ally around you.',
-    hp: 0.9, regen: 2, thrust: 1.05, speed: 1.06, turn: 1.08, damage: 0.65, fireRate: 1.1, radius: 15, mass: 0.9,
+    hp: 0.9, regen: 2, thrust: 1.05, speed: 1.06, turn: 1.08, damage: 0.65, fireRate: 1.1, fuel: 1.1, radius: 15, nose: 20, mass: 0.9,
     ability: { name: 'Repair Pulse', cost: 220, cooldown: seconds(9), duration: seconds(0.5), impulse: 0, range: 430 },
   },
   {
     name: 'Graviton',
     role: 'Controller',
     desc: 'Deploys a singularity that drags enemies and loose rocks into a crushing core. Great for team kills.',
-    hp: 1.2, regen: 1, thrust: 0.9, speed: 0.9, turn: 0.92, damage: 0.85, fireRate: 0.9, radius: 18, mass: 1.5,
+    hp: 1.2, regen: 1, thrust: 0.9, speed: 0.9, turn: 0.92, damage: 0.85, fireRate: 0.9, fuel: 1, radius: 18, nose: 24, mass: 1.5,
     ability: { name: 'Singularity', cost: 260, cooldown: seconds(12), duration: seconds(0.5), impulse: 0 },
   },
 ]);
@@ -153,12 +154,28 @@ export const SINGULARITY = Object.freeze({
 const BASE = Object.freeze({
   hp: 100,
   regen: 2, // hp per second, after a delay without damage
-  thrust: 560, // units/s^2 (main engine)
+  thrust: 680, // units/s^2 (main engine); out-pulls every surface but the dense core's
   maxSpeed: 480, // thrusters cannot push past this; gravity and boost can
   boostSpeed: 1.7, // × maxSpeed while boosting
   backThrust: 0.6, // reverse thruster, × thrust
   strafeThrust: 0.75, // lateral thrusters, × thrust
+  moveThrust: 0.85, // screen-direction (W/A/S/D) thrusters, × thrust
   brake: 0.9, // retro-brake deceleration, × thrust
+  // Coasting in open space: with no thruster firing, a ship faster than
+  // coastSpeed (× maxSpeed) slows towards it at coastDrag (per second), then
+  // keeps that speed. Inside gravity wells there is no drag, so orbits work.
+  coastSpeed: 0.42,
+  coastDrag: 0.8,
+  // Fuel, in integer units so prediction stays exact. Thrusters burn it every
+  // tick they fire; landing on a planet refuels. An empty tank leaves only
+  // reserve thrusters at reservePower.
+  fuelMax: 4200,
+  fuelBurnMain: 3, // main engine, or the screen-direction thrusters
+  fuelBurnBoost: 6,
+  fuelBurnThruster: 2, // reverse and lateral thrusters
+  fuelBurnBrake: 2,
+  fuelRefuel: 30, // per tick while landed on a planet
+  reservePower: 0.2,
   turnRate: 4.4, // rad/s
   damage: 12,
   bulletSpeed: 860,
@@ -191,7 +208,18 @@ export function deriveStats(levels, weapon, rapid, overdrive, out = {}, shipClas
   out.boostSpeed = out.maxSpeed * BASE.boostSpeed * (overdrive ? 1.15 : 1);
   out.backThrust = BASE.backThrust;
   out.strafeThrust = BASE.strafeThrust;
+  out.moveThrust = BASE.moveThrust;
   out.brakeAccel = out.thrust * BASE.brake;
+  out.coastSpeed = out.maxSpeed * BASE.coastSpeed;
+  out.coastDecay = Math.exp(-BASE.coastDrag / TICK_RATE); // per tick
+  out.fuelMax = Math.round(BASE.fuelMax * (1 + 0.06 * levels[Stat.ENGINE]) * c.fuel);
+  out.fuelBurnMain = BASE.fuelBurnMain;
+  out.fuelBurnBoost = BASE.fuelBurnBoost;
+  out.fuelBurnThruster = BASE.fuelBurnThruster;
+  out.fuelBurnBrake = BASE.fuelBurnBrake;
+  out.fuelRefuel = BASE.fuelRefuel;
+  out.reservePower = BASE.reservePower;
+  out.nose = c.nose;
   out.turnRate = BASE.turnRate * (1 + 0.08 * levels[Stat.HANDLING]) * c.turn;
   out.damage = BASE.damage * (1 + 0.14 * levels[Stat.DAMAGE]) * w.damage * c.damage * (perks & Perk.FORGE ? 1.15 : 1);
   out.bulletSpeed = BASE.bulletSpeed * (1 + 0.06 * levels[Stat.VELOCITY]) * w.speed;

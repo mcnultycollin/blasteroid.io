@@ -8,7 +8,7 @@ export class CommandQueue {
   constructor(capacity) {
     this.capacity = capacity;
     this.seqs = new Uint32Array(capacity);
-    this.buttons = new Uint16Array(capacity);
+    this.buttons = new Uint32Array(capacity);
     this.aims = new Float64Array(capacity);
     this.head = 0;
     this.size = 0;

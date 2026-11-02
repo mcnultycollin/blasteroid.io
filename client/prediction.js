@@ -35,7 +35,7 @@ export class Predictor {
     this.seq = 0; // last command sequence generated (monotonic for the connection)
     this.lifeFirstSeq = 1; // first command of the current life
     this.pendingSeq = new Uint32Array(MAX_PENDING);
-    this.pendingButtons = new Uint16Array(MAX_PENDING);
+    this.pendingButtons = new Uint32Array(MAX_PENDING);
     this.pendingAim = new Float64Array(MAX_PENDING);
     this.pendingHead = 0;
     this.pendingCount = 0;
@@ -157,10 +157,12 @@ export class Predictor {
     }
   }
 
+  /** Blends out the visual correction offset; returns the factor applied, for offsets that blend in step. */
   decayError(dtMs) {
     const k = Math.exp(-dtMs / SMOOTHING_MS);
     this.errorX *= k;
     this.errorY *= k;
+    return k;
   }
 
   /** Render position between the last two predicted ticks (alpha in [0, 1)), plus smoothing. */

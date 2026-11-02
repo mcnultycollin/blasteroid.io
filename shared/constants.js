@@ -4,7 +4,7 @@
  * tuning (spawn rates, rewards, AI) lives in server/game/tuning.js.
  */
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /* Timing ------------------------------------------------------------------ */
 
@@ -35,8 +35,7 @@ export const RemoveReason = Object.freeze({
   EXPIRED: 4,
 });
 
-export const SHIP_RADIUS = 16;
-export const SHIP_NOSE = 20; // muzzle distance from the ship's centre
+/* Hull sizes and muzzle positions depend on the ship class: see CLASSES in stats.js. */
 
 export const ShipFlag = Object.freeze({
   THRUST: 1,
@@ -70,9 +69,10 @@ export const PickupKind = Object.freeze({
   RAPID: 4,
   REPAIR: 5,
   OVERDRIVE: 6,
+  FUEL: 7, // a fuel cell: refills part of the tank
 });
-export const PICKUP_RADIUS = [5, 7, 10, 13, 13, 13, 13];
-export const isPowerup = (kind) => kind >= PickupKind.SHIELD;
+export const PICKUP_RADIUS = [5, 7, 10, 13, 13, 13, 13, 12];
+export const isPowerup = (kind) => kind >= PickupKind.SHIELD && kind <= PickupKind.OVERDRIVE;
 
 /** Timed power-up slots on a ship. */
 export const Powerup = Object.freeze({ SHIELD: 0, RAPID: 1, OVERDRIVE: 2 });
@@ -95,8 +95,14 @@ export const Button = Object.freeze({
   BLAST: 1024, // kinetic push wave
   LOCK: 2048, // toggle orbit lock (sent once per key press)
   ABILITY: 4096, // class ability
+  // Thrusters that push in a screen direction whatever way the ship faces
+  MOVE_UP: 1 << 13,
+  MOVE_DOWN: 1 << 14,
+  MOVE_LEFT: 1 << 15,
+  MOVE_RIGHT: 1 << 16,
 });
-export const BUTTON_MASK = 0x1fff;
+export const BUTTON_MASK = 0x1ffff;
+export const MOVE_BUTTONS = Button.MOVE_UP | Button.MOVE_DOWN | Button.MOVE_LEFT | Button.MOVE_RIGHT;
 
 /* Teams ------------------------------------------------------------------- */
 

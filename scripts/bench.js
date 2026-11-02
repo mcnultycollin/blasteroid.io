@@ -6,6 +6,7 @@
  *
  *   npm run bench            # 60 players
  *   npm run bench -- 120     # 120 players
+ *   TEAMS=0 npm run bench    # free-for-all instead of team rounds
  */
 import { SNAPSHOT_INTERVAL, TICK_MS, TICK_RATE } from '../shared/constants.js';
 import { BinaryWriter, SnapshotWriter } from '../shared/protocol.js';
@@ -15,6 +16,7 @@ import { Session } from '../server/net/Session.js';
 
 const players = Number(process.argv[2] ?? 60);
 const seconds = Number(process.argv[3] ?? 60);
+const teams = process.env.TEAMS ? process.env.TEAMS === '1' || process.env.TEAMS === 'true' : true; // as in server/config.js
 const fakeSocket = { readyState: 1, bufferedAmount: 0, send() {}, close() {}, terminate() {} };
 
 function percentile(sorted, p) {
@@ -31,8 +33,8 @@ function report(label, samples) {
   return avg;
 }
 
-const game = new Game({ seed: 1234, botTarget: players });
-console.log(`Warming up ${players} bots...`);
+const game = new Game({ seed: 1234, botTarget: players, teams });
+console.log(`Warming up ${players} bots (${teams ? 'team rounds' : 'free-for-all'})...`);
 for (let i = 0; i < TICK_RATE * 20; i++) game.step();
 
 // One session per bot, as if each were a human receiving snapshots.

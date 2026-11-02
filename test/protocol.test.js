@@ -93,7 +93,7 @@ test('snapshot round-trips every section and entity type', () => {
   const ship = {
     id: 11, type: EntityType.SHIP, playerId: 4, x: 100.25, y: 6000.5, vx: -50.75, vy: 20, angle: 1.25,
     hp: 73.4, maxHp: 130, shield: 12.2, energy: 480, cooldown: 3, boostLock: 1, blastCooldown: 40, flags: 9 | 256,
-    abilityCooldown: 700, abilityTime: 12, shipClass: 3, perks: 5,
+    abilityCooldown: 700, abilityTime: 12, shipClass: 3, perks: 5, fuel: 3210,
     lockBody: 1, lockRadius: 287.25, lockPhase: -2.5, lockEpoch: 123456, lockOmega: 0.41, lockDir: -1,
     score: 1234, kills: 2, level: 6, points: 1, statLevels: Uint8Array.from([1, 0, 2, 0, 3, 0, 0, 1]),
     weapon: 2, weaponChoice: true, powerups: Uint16Array.from([100, 0, 50]), spawnTick: 77,
@@ -130,8 +130,8 @@ test('snapshot round-trips every section and entity type', () => {
 
   const out = new SnapshotWriter(new BinaryWriter(16));
   out.begin(1000, 1 | 2 | 8);
-  out.self(ship, 555, -77);
   out.stats(ship);
+  out.self(ship, 555, -77);
   out.world(match);
   out.beginList();
   out.removal(30, RemoveReason.DESTROYED, NO_ID);
@@ -175,6 +175,7 @@ test('snapshot round-trips every section and entity type', () => {
     [got.self.lockBody, got.self.lockRadius, got.self.lockPhase, got.self.lockEpoch, got.self.lockOmega, got.self.lockDir],
     [1, 287.25, -2.5, 123456, 0.41, -1],
   );
+  assert.equal(got.self.fuel, 3210);
   assert.equal(got.self.abilityCooldown, 700);
   assert.equal(got.self.abilityTime, 12);
   assert.equal(got.stats.shipClass, 3);
@@ -204,6 +205,7 @@ test('snapshot round-trips every section and entity type', () => {
   assert.equal(own.fireSeq, 70001 & 0xffff);
   assert.equal(own.muzzle, 1);
   assert.equal(own.fresh, true);
+  assert.equal(own.age, 1, 'fired one tick before the snapshot: clients start it at its muzzle at that tick');
   assert.equal(own.kind, BulletKind.CANNON);
   assert.equal(other.own, false);
   assert.equal(other.fresh, false);
@@ -236,14 +238,15 @@ test('welcome carries the star and planets with their orbits at full precision',
   assert.deepEqual(w.outposts, terrain.outposts);
 });
 
-test('input commands carry 16 button bits', () => {
-  const buttons = Button.BLAST | Button.LOCK | Button.STRAFE_RIGHT | Button.FIRE;
+test('input commands carry every button bit, the screen thrusters included', () => {
+  const buttons = Button.BLAST | Button.LOCK | Button.STRAFE_RIGHT | Button.FIRE | Button.MOVE_RIGHT | Button.MOVE_UP;
   const r = new BinaryReader(encodeInput(new BinaryWriter(), 4242, buttons, qAngle(1)));
   r.u8();
   assert.equal(r.u32(), 4242);
   assert.equal(r.u8(), 1);
-  assert.equal(r.u16() & BUTTON_MASK, buttons);
+  assert.equal(r.u32() & BUTTON_MASK, buttons);
   assert.equal(r.u16(), qAngle(1));
+  assert.ok(Button.MOVE_RIGHT > 0xffff, 'beyond 16 bits');
 });
 
 test('asteroid records carry orbits exactly, or positions for free and falling rocks', () => {

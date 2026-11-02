@@ -22,7 +22,7 @@ import { exposedToFlare, nebulaAt, nightSide, starOf } from '../../shared/terrai
 import { awardScore, damageAlien, damageShip, refreshStats } from './combat.js';
 import { findOpenSpot } from './spawning.js';
 import { addTeamScore } from './teams.js';
-import { FLARE, NEBULA, OUTPOST } from './tuning.js';
+import { FLARE, FUEL, NEBULA, OUTPOST } from './tuning.js';
 
 const PERK_BY_KIND = { [BodyKind.CORE]: Perk.FORGE, [BodyKind.GAS]: Perk.REFINERY, [BodyKind.ROCK]: Perk.SHIPYARD };
 const PERK_NAMES = { [Perk.FORGE]: 'Forge', [Perk.REFINERY]: 'Refinery', [Perk.SHIPYARD]: 'Shipyard' };
@@ -104,6 +104,7 @@ function updateOutposts(game) {
       const dy = wrapDelta(ship.y - p.y, WORLD_SIZE);
       if (dx * dx + dy * dy < OUTPOST_RADIUS * OUTPOST_RADIUS) crews[ship.team]++;
     }
+    if (state.owner !== NO_TEAM) refuelCrew(game, p, state.owner);
     const contested = crews[0] > 0 && crews[1] > 0;
     const before = state.progress;
     let progress = before;
@@ -134,6 +135,16 @@ function updateOutposts(game) {
       addTeamScore(game, state.owner, OUTPOST.pointsPerSecond);
       rewardCrew(game, p, state.owner, OUTPOST.holdScore);
     }
+  }
+}
+
+/** A team's own outpost refuels its pilots in the zone. */
+function refuelCrew(game, p, team) {
+  for (const ship of game.ships) {
+    if (ship.dead || ship.team !== team || ship.fuel >= ship.st.fuelMax) continue;
+    const dx = wrapDelta(ship.x - p.x, WORLD_SIZE);
+    const dy = wrapDelta(ship.y - p.y, WORLD_SIZE);
+    if (dx * dx + dy * dy < OUTPOST_RADIUS * OUTPOST_RADIUS) ship.fuel = Math.min(ship.st.fuelMax, ship.fuel + FUEL.outpostRefuel);
   }
 }
 

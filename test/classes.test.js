@@ -16,6 +16,7 @@ function ship(st, x = 1000, y = 1000) {
   s.x = x;
   s.y = y;
   s.energy = st.energyMax;
+  s.fuel = st.fuelMax;
   return s;
 }
 
@@ -63,8 +64,13 @@ test('the afterburner kicks the ship towards its held thrusters, past the cruise
   assert.equal(s.abilityCooldown, st.abilityCooldown);
   const plain = ship(st);
   stepShip(plain, Button.ABILITY, 0, st);
-  assert.ok(Math.abs(plain.vx - st.abilityImpulse) < 1e-6, 'forward when no thruster is held');
+  // Forward when no thruster is held; with no thruster firing, a tick of coasting drag follows.
+  assert.ok(Math.abs(plain.vx - st.abilityImpulse * st.coastDecay) < 1e-6, 'forward when no thruster is held');
   assert.equal(stepShip(plain, Button.ABILITY, 0, st) & StepResult.ABILITY, 0, 'then it recharges');
+  const screen = ship(st);
+  screen.angle = 2.5; // facing away: the screen thrusters decide the direction
+  stepShip(screen, Button.ABILITY | Button.MOVE_UP, 0, st);
+  assert.ok(screen.vy < -st.abilityImpulse && Math.abs(screen.vx) < 1e-9, 'up the screen, whatever the heading');
 });
 
 test('the ram drive charges forward on its own and lifts the speed limit while it lasts', () => {

@@ -135,6 +135,16 @@ export class Effects {
     }
   }
 
+  /** A ship swallowed by the star: a fireball of flame and embers inside two heat rings. */
+  supernova(x, y) {
+    this.ring(x, y, 12, 170, 0.7, Color.GOLD, 0, Math.PI, 7);
+    this.ring(x, y, 6, 110, 0.9, Color.ORANGE, 0, Math.PI, 4);
+    this.burst(x, y, 70, 460, Color.ORANGE, 1.3, 0.06);
+    this.burst(x, y, 50, 320, Color.GOLD, 1.1, 0.05);
+    this.burst(x, y, 36, 220, Color.RED, 1.6, 0.04);
+    this.burst(x, y, 24, 140, Color.WHITE, 0.5, 0);
+  }
+
   /** Flames licking off a ship touching the star. */
   burn(x, y) {
     for (let i = 0; i < 3; i++) {

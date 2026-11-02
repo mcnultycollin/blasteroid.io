@@ -73,12 +73,13 @@ export function buildSnapshot(game, session, out, leader) {
 
   out.begin(game.tick, flags);
   if (ship) {
-    out.self(ship, player.ackSeq, player.timeOffset);
+    // Stats first: the client must derive its ship's new stats before it replays its inputs from the self block.
     if (flags & SnapFlag.STATS) {
       out.stats(ship);
       session.statsShip = ship;
       session.statsVersion = ship.statsVersion;
     }
+    out.self(ship, player.ackSeq, player.timeOffset);
   } else {
     out.spectate(focus ? focus.id : NO_ID, cx, cy);
   }

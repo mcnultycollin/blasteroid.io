@@ -39,6 +39,7 @@ const POWERUP_UI = [
 const WEAPON_KEYS = ['Z', 'X', 'C'];
 const NOTICE_MS = 1800;
 const SCOREBOARD_H = 46; // height of the team scoreboard at the top centre
+const STATUS_H = 60; // height of the hull / energy / fuel / experience block at the bottom centre
 const PERK_NAMES = [
   [Perk.FORGE, 'FORGE +15% DMG'],
   [Perk.REFINERY, 'REFINERY +50% ENERGY'],
@@ -161,7 +162,7 @@ export class Hud {
     const { self, stats, st } = v;
     const barW = Math.min(440, W - 2 * MARGIN);
     const x = (W - barW) / 2;
-    let y = H - MARGIN - 52;
+    let y = H - MARGIN - STATUS_H;
 
     // Hull, with shield shown as an overlay segment
     const hpFrac = clamp(self.hp / st.maxHp, 0, 1);
@@ -185,6 +186,20 @@ export class Hud {
     ctx.fillRect(x, y, barW, 6);
     ctx.fillStyle = self.boostLock ? '#556' : '#5cf2ff';
     ctx.fillRect(x, y, barW * energyFrac, 6);
+
+    // Fuel, blinking when low; a note while refuelling
+    y += 8;
+    const fuelFrac = clamp(v.fuel / v.fuelMax, 0, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(x, y, barW, 6);
+    ctx.fillStyle = '#ffb347';
+    ctx.globalAlpha = fuelFrac < 0.2 && !v.refueling ? 0.45 + 0.55 * Math.abs(Math.sin(v.now / 160)) : 1;
+    ctx.fillRect(x, y, barW * fuelFrac, 6);
+    ctx.globalAlpha = 1;
+    ctx.font = `bold 9px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = v.fuel === 0 ? '#ff4d4d' : '#ffb347';
+    ctx.fillText(v.refueling ? 'REFUELLING' : v.fuel === 0 ? 'NO FUEL' : 'FUEL', x - 6, y + 6);
 
     // Experience
     y += 12;
@@ -299,7 +314,7 @@ export class Hud {
     const gap = 12;
     const total = WEAPON_CHOICES.length * cardW + (WEAPON_CHOICES.length - 1) * gap;
     const x0 = (W - total) / 2;
-    const y = H - MARGIN - 52 - 30 - cardH - 26;
+    const y = H - MARGIN - STATUS_H - 30 - cardH - 26;
     ctx.textAlign = 'center';
     ctx.font = `bold 13px ${FONT}`;
     ctx.fillStyle = '#ffd166';
@@ -324,7 +339,7 @@ export class Hud {
     const { stats } = v;
     const elapsed = v.serverTick - stats.receivedTick;
     let x = (W - Math.min(440, W - 2 * MARGIN)) / 2;
-    const y = H - MARGIN - 52 - 14;
+    const y = H - MARGIN - STATUS_H - 14;
     ctx.font = `bold 11px ${FONT}`;
     ctx.textAlign = 'left';
     for (let p = 0; p < POWERUP_COUNT; p++) {
@@ -583,7 +598,7 @@ export class Hud {
     }
     const barW = Math.min(440, W - 2 * MARGIN);
     const right = (W + barW) / 2;
-    const y = H - MARGIN - 52 - 30;
+    const y = H - MARGIN - STATUS_H - 30;
     const alarm = f.state === Flight.IMPACT;
     ctx.textAlign = 'right';
     ctx.font = `bold 13px ${FONT}`;
@@ -687,7 +702,7 @@ export class Hud {
     if (v.touch) return; // the touch ability button shows the same gauge
     const barW = Math.min(440, W - 2 * MARGIN);
     const x = (W + barW) / 2 + 64;
-    const y = H - MARGIN - 52 + 12;
+    const y = H - MARGIN - STATUS_H + 12;
     this.drawGauge(ctx, x, y, 15, v.abilityCharge, v.abilityReady, 'E');
     ctx.font = `9px ${FONT}`;
     ctx.textAlign = 'center';
@@ -700,7 +715,7 @@ export class Hud {
     if (v.touch) return; // the touch BLAST button shows the same gauge
     const barW = Math.min(440, W - 2 * MARGIN);
     const x = (W + barW) / 2 + 26;
-    const y = H - MARGIN - 52 + 12;
+    const y = H - MARGIN - STATUS_H + 12;
     this.drawGauge(ctx, x, y, 15, v.blastCharge, v.blastReady, 'P');
   }
 

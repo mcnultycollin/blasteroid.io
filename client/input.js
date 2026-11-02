@@ -5,26 +5,31 @@
  * Two steering styles coexist: classic rotate keys (arrows), or aiming with
  * the mouse, where the ship turns towards the cursor at its turn rate.
  * Moving the mouse switches to aiming; pressing a rotate key switches back.
- * W/A/S/D fire the ship's forward, lateral and reverse thrusters, so it can
- * accelerate in any direction while the nose stays on target.
+ *
+ * W/A/S/D fire thrusters in one of two modes (a menu setting):
+ *  - 'screen' (default): up, left, down and right on screen, whichever way
+ *    the ship faces;
+ *  - 'ship': forward, left, reverse and right relative to the ship's nose.
  */
 import { Button } from '../shared/constants.js';
+
+export const ThrusterMode = Object.freeze({ SCREEN: 'screen', SHIP: 'ship' });
 
 const KEY_BUTTONS = {
   ArrowUp: Button.THRUST,
   ArrowLeft: Button.LEFT,
   ArrowRight: Button.RIGHT,
   ArrowDown: Button.BRAKE,
-  KeyW: Button.THRUST,
-  KeyS: Button.BACK,
-  KeyA: Button.STRAFE_LEFT,
-  KeyD: Button.STRAFE_RIGHT,
   KeyQ: Button.BRAKE,
   KeyP: Button.BLAST,
   KeyE: Button.ABILITY,
   Space: Button.FIRE,
   ShiftLeft: Button.BOOST,
   ShiftRight: Button.BOOST,
+};
+const WASD = {
+  [ThrusterMode.SCREEN]: { KeyW: Button.MOVE_UP, KeyA: Button.MOVE_LEFT, KeyS: Button.MOVE_DOWN, KeyD: Button.MOVE_RIGHT },
+  [ThrusterMode.SHIP]: { KeyW: Button.THRUST, KeyA: Button.STRAFE_LEFT, KeyS: Button.BACK, KeyD: Button.STRAFE_RIGHT },
 };
 const WEAPON_KEYS = { KeyZ: 0, KeyX: 1, KeyC: 2 };
 const TOUCH_HOLD = { blast: Button.BLAST, brake: Button.BRAKE, ability: Button.ABILITY }; // on-screen buttons held by a finger
@@ -33,7 +38,7 @@ const STICK_BOOST = 85; // px: pushing the stick this far engages boost
 
 /**
  * `actions` callbacks: upgrade(stat), weapon(choiceIndex), respawn(),
- * toggleMute(), toggleStealth(), toggleDebug(),
+ * toggleMute(), toggleStealth(), toggleDebug(), toggleTrajectory(),
  * hudPress(x, y) -> null, or the HUD action under the press ({type: ...}).
  */
 export class Input {
@@ -41,7 +46,8 @@ export class Input {
     this.canvas = canvas;
     this.actions = actions;
     this.enabled = false; // gameplay keys only while playing
-    this.keys = 0;
+    this.thrusterMode = ThrusterMode.SCREEN;
+    this.held = new Set(); // KeyboardEvent.code of every held key that maps to a button
     this.mouseButtons = 0;
     this.mouseX = innerWidth / 2;
     this.mouseY = innerHeight / 2;
@@ -66,7 +72,7 @@ export class Input {
   }
 
   releaseAll() {
-    this.keys = 0;
+    this.held.clear();
     this.mouseButtons = 0;
     this.stick.id = -1;
     this.fireTouch = -1;
@@ -76,14 +82,14 @@ export class Input {
 
   onKey(e, down) {
     if (e.target instanceof HTMLInputElement) return; // typing a name
-    const bit = KEY_BUTTONS[e.code];
-    if (bit !== undefined) {
+    const bit = this.keyBit(e.code);
+    if (bit !== 0) {
       if (this.enabled) e.preventDefault();
       if (down) {
-        this.keys |= bit;
+        this.held.add(e.code);
         if (bit === Button.LEFT || bit === Button.RIGHT) this.aimWithMouse = false;
       } else {
-        this.keys &= ~bit;
+        this.held.delete(e.code);
       }
       return;
     }
@@ -101,6 +107,8 @@ export class Input {
       this.actions.toggleMute();
     } else if (e.code === 'KeyI') {
       this.actions.toggleStealth();
+    } else if (e.code === 'KeyT') {
+      this.actions.toggleTrajectory();
     } else if (e.code === 'F3' || e.code === 'Backquote') {
       e.preventDefault();
       this.actions.toggleDebug();
@@ -162,12 +170,23 @@ export class Input {
     return { dx: this.stick.x - this.stick.ox, dy: this.stick.y - this.stick.oy };
   }
 
+  /** The Button bit a key stands for in the current thruster mode, or 0. */
+  keyBit(code) {
+    return KEY_BUTTONS[code] ?? WASD[this.thrusterMode][code] ?? 0;
+  }
+
+  /** Switches what W/A/S/D fire (a ThrusterMode); unknown values fall back to screen directions. */
+  setThrusterMode(mode) {
+    this.thrusterMode = WASD[mode] ? mode : ThrusterMode.SCREEN;
+  }
+
   /**
    * Computes `buttons` and `aim` for this tick. (shipX, shipY) is the player's
    * ship position on screen in CSS pixels; `angle` its current heading.
    */
   sample(shipX, shipY, angle) {
-    let buttons = this.keys | this.mouseButtons;
+    let buttons = this.mouseButtons;
+    for (const code of this.held) buttons |= this.keyBit(code);
     let aim = angle;
     const stick = this.stickVector();
     if (stick) {

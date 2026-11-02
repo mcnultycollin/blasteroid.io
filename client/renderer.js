@@ -306,7 +306,8 @@ export class Renderer {
     if (world.match?.flare) this.drawFlare(world, world.match.flare, view.tick, view.time);
     this.drawWells(world.planets, view.time, focus);
     this.drawFields(world, view.tick, view.time);
-    if (view.flight?.visible) this.drawFlight(view.flight, view.lock, view.time);
+    if (view.flight?.visible && (view.flight.shown || view.lock)) this.drawFlight(view.flight, view.lock, view.time);
+    if (view.reticle) this.drawReticle(view.reticle, view.time);
     this.drawBodies(world.planets, view.time);
     this.drawOutposts(world, view.time);
     this.drawPickups(pickups, view.time);
@@ -659,6 +660,32 @@ export class Renderer {
   }
 
   /**
+   * The Graviton's aim: where its singularity would form, solid when the
+   * ability is ready.
+   */
+  drawReticle(r, time) {
+    const { ctx } = this;
+    const dx = wrapDelta(r.x - this.camX, WORLD_SIZE);
+    const dy = wrapDelta(r.y - this.camY, WORLD_SIZE);
+    ctx.save();
+    ctx.translate(dx, dy);
+    ctx.rotate(time * 1.5);
+    ctx.strokeStyle = r.color;
+    ctx.globalAlpha = r.ready ? 0.7 : 0.25;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(r.ready ? [] : [4, 6]);
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * TAU;
+      ctx.moveTo(Math.cos(a) * 14, Math.sin(a) * 14);
+      ctx.arc(0, 0, 14, a, a + 0.9);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
    * Bodies as vector globes: the star a blazing disc with a flickering
    * corona; light gas giants get bands and a ring, rocky worlds craters,
    * dense cores a hot glowing heart.
@@ -862,7 +889,34 @@ export class Renderer {
     for (let k = 0; k < batch.kinds.length; k++) dots(batch.kinds[k], BULLET_COLORS[k], BULLET_COLORS[k]);
   }
 
+  /** Fuel cells: amber canisters that bob and glow. */
+  drawFuelCells(list, time) {
+    const { ctx } = this;
+    ctx.lineWidth = 2;
+    for (const p of list) {
+      if (p.kind !== PickupKind.FUEL) continue;
+      const bob = Math.sin(time * 3 + p.seed) * 2;
+      ctx.save();
+      ctx.translate(p.dx, p.dy + bob);
+      ctx.rotate(0.35);
+      ctx.fillStyle = 'rgba(255, 179, 71, 0.2)';
+      ctx.strokeStyle = '#ffb347';
+      ctx.beginPath();
+      ctx.rect(-6, -10, 12, 20);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-3, -13);
+      ctx.lineTo(3, -13);
+      ctx.moveTo(-6, 0);
+      ctx.lineTo(6, 0);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   drawPickups(list, time) {
+    this.drawFuelCells(list, time);
     const { ctx } = this;
     ctx.beginPath();
     for (const p of list) {
@@ -941,6 +995,20 @@ export class Renderer {
       ctx.lineTo(-len * r, 0);
       ctx.lineTo(-0.62 * r, 0.38 * r);
       ctx.strokeStyle = boost ? '#5cf2ff' : '#ff8c42';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    if (s.moveX || s.moveY) {
+      // Screen-direction thrusters: a flame on the side opposite the push, whatever the heading.
+      const a = Math.atan2(-s.moveY, -s.moveX) - s.ra;
+      const c = Math.cos(a);
+      const sn = Math.sin(a);
+      const len = (1.25 + Math.random() * 0.4) * r;
+      ctx.beginPath();
+      ctx.moveTo(c * 0.7 * r - sn * 0.3 * r, sn * 0.7 * r + c * 0.3 * r);
+      ctx.lineTo(c * len, sn * len);
+      ctx.lineTo(c * 0.7 * r + sn * 0.3 * r, sn * 0.7 * r - c * 0.3 * r);
+      ctx.strokeStyle = '#ff8c42';
       ctx.lineWidth = 2;
       ctx.stroke();
     }

@@ -42,6 +42,7 @@ export class FlightPath {
     this.altitude = 0; // above the body's surface
     this.orbit = { state: OrbitState.STABLE, periapsis: 0, apoapsis: 0 };
     this.visible = false; // worth drawing: in a well, or about to enter one
+    this.shown = false; // the caller's choice: always (planner on) or only before a contact
   }
 
   /**
@@ -106,6 +107,15 @@ export class FlightPath {
     else if (this.orbit.state === OrbitState.ESCAPE) this.state = Flight.ESCAPE;
     else if (this.orbit.state === OrbitState.IMPACT) this.state = Flight.DESCENT; // touches down past the preview
     else this.state = Flight.STABLE;
+  }
+
+  /** No well within reach: nothing to plan or show. */
+  clear() {
+    this.count = 0;
+    this.contact = false;
+    this.visible = false;
+    this.body = null;
+    this.state = Flight.FREE;
   }
 
   push(x, y) {

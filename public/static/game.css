@@ -296,3 +296,21 @@ kbd {
 .team-note .polaris {
   color: #4cc6ff;
 }
+
+/* Settings toggles in the controls list */
+.setting {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: normal;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(255, 209, 102, 0.08);
+  border: 1px solid rgba(255, 209, 102, 0.45);
+}
+
+.setting-hint {
+  margin-top: -4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}

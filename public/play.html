@@ -44,10 +44,14 @@
         <p id="status" class="status" aria-live="polite">Connecting…</p>
         <div class="controls">
           <div><kbd>Mouse</kbd> aim &nbsp; <kbd>Click</kbd> / <kbd>Space</kbd> fire &nbsp; <kbd>Shift</kbd> boost</div>
-          <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> thrusters: forward, left, back, right</div>
+          <div>
+            <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> thrusters:
+            <button id="thruster-mode" class="setting" type="button" aria-describedby="thruster-hint"></button>
+          </div>
+          <div id="thruster-hint" class="setting-hint"></div>
           <div><kbd>↑</kbd> thrust &nbsp; <kbd>←</kbd> <kbd>→</kbd> rotate &nbsp; <kbd>↓</kbd> / <kbd>Q</kbd> brake</div>
           <div><kbd>E</kbd> class ability &nbsp; <kbd>P</kbd> kinetic blast &nbsp; <kbd>L</kbd> lock orbit</div>
-          <div><kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
+          <div><kbd>T</kbd> trajectory planner &nbsp; <kbd>1</kbd>–<kbd>8</kbd> upgrade &nbsp; <kbd>M</kbd> mute</div>
           <div class="touch-hint">Touch: drag left side to steer and thrust, hold right side to fire; ability, BLAST, LOCK and BRAKE buttons on the right</div>
           <div id="dev-hint" class="hidden"><kbd>I</kbd> hide from bots (testing) &nbsp; <kbd>F3</kbd> netgraph</div>
         </div>

@@ -5,13 +5,21 @@
  * produce the same result. Keep it free of randomness, wall-clock time and
  * side effects beyond the state object.
  *
- * Space has no drag: ships drift until something changes their course.
- * Thrusters (main, reverse and lateral) cannot push a ship past its cruise
- * speed, or its boost speed while boosting, but gravity can, so dives and
- * slingshots keep their momentum.
+ * Flight model:
+ *  - Thrusters: the main engine and reverse/lateral thrusters push along the
+ *    ship's own axes; the screen-direction thrusters (MOVE_*) push up, down,
+ *    left or right whatever way the ship faces. None can push a ship past its
+ *    cruise speed (or boost speed while boosting), but gravity can, so dives
+ *    and slingshots keep their momentum.
+ *  - Coasting: with no thruster firing, a ship in open space slows towards
+ *    its coast speed and then holds it. Inside a gravity well there is no
+ *    drag at all, so orbits and slingshots behave like real ones; the drag
+ *    fades in across the outer edge of each well.
+ *  - Fuel: thrusters burn it every tick they fire. Landing gently on a planet
+ *    refuels; an empty tank leaves only weak reserve thrusters.
  */
-import { Button, MAX_SPEED, SHIP_NOSE, TICK_DT, WORLD_SIZE } from './constants.js';
-import { applyGravity, collideBodies, dominantBody, orbitAngularSpeed, pullAt } from './gravity.js';
+import { BodyKind, Button, MAX_SPEED, MOVE_BUTTONS, TICK_DT, WORLD_SIZE } from './constants.js';
+import { GRAVITY, applyGravity, collideBodies, dominantBody, orbitAngularSpeed, pullAt } from './gravity.js';
 import { angleDiff, normalizeAngle, wrap, wrapDelta } from './math.js';
 import { Ability, WEAPONS } from './stats.js';
 
@@ -26,13 +34,17 @@ export const StepResult = Object.freeze({
   UNLOCKED: 128, // left an orbit lock
   LOCK_FAILED: 256, // asked to lock with no body in range
   ABILITY: 512, // activated the class ability this step
+  REFUEL: 1024, // took on fuel while landed
 });
 
 /** Minimum altitude above a body's surface for an orbit lock. */
 export const LOCK_CLEARANCE = 30;
 
 const NO_BODIES = Object.freeze([]);
+const SHIP_FRAME_THRUSTERS = Button.BACK | Button.STRAFE_LEFT | Button.STRAFE_RIGHT;
 const hit = { impact: 0, body: null };
+/** This step's thrust, in the ship's frame (forward, lateral) and the world's (x, y). */
+const thrust = { forward: 0, lateral: 0, x: 0, y: 0 };
 
 /**
  * The ship state that prediction simulates. `impact` and `contactBody` are
@@ -48,6 +60,7 @@ export function createShipState() {
     vy: 0,
     angle: 0,
     energy: 0,
+    fuel: 0,
     cooldown: 0,
     boostLock: 0,
     blastCooldown: 0,
@@ -71,6 +84,7 @@ export function copyShipState(to, from) {
   to.vy = from.vy;
   to.angle = from.angle;
   to.energy = from.energy;
+  to.fuel = from.fuel;
   to.cooldown = from.cooldown;
   to.boostLock = from.boostLock;
   to.blastCooldown = from.blastCooldown;
@@ -100,46 +114,17 @@ export function copyShipState(to, from) {
  */
 export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fields = NO_BODIES) {
   let result = 0;
+  rotate(s, buttons, aim, st);
+  if (buttons & Button.LOCK) result |= toggleLock(s, st, bodies, tick);
 
-  const turn = st.turnRate * TICK_DT;
-  if (buttons & Button.AIM) {
-    const d = angleDiff(aim, s.angle);
-    s.angle = normalizeAngle(s.angle + (d > turn ? turn : d < -turn ? -turn : d));
-  } else if (buttons & (Button.LEFT | Button.RIGHT)) {
-    if (buttons & Button.LEFT) s.angle -= turn;
-    if (buttons & Button.RIGHT) s.angle += turn;
-    s.angle = normalizeAngle(s.angle);
-  }
-
-  if (buttons & Button.LOCK) {
-    if (s.lockBody >= 0) {
-      s.lockBody = -1;
-      result |= StepResult.UNLOCKED;
-    } else {
-      result |= lockOrbit(s, st, bodies, tick) ? StepResult.LOCKED : StepResult.LOCK_FAILED;
-    }
-  }
-
-  // Energy: boost drains it, everything else lets it recharge (integers keep this exact).
-  const boosting = (buttons & Button.BOOST) !== 0 && !s.boostLock && s.energy > 0;
-  if (boosting) {
-    s.energy = Math.max(0, s.energy - st.boostDrain);
-    if (s.energy === 0) s.boostLock = 1;
-    result |= StepResult.BOOST | StepResult.THRUST;
-  } else {
-    s.energy = Math.min(st.energyMax, s.energy + st.energyRegen);
-    if (s.boostLock && s.energy >= st.boostUnlock) s.boostLock = 0;
-  }
-
-  // Thrust in the ship's frame: forward and lateral components.
-  let forward = boosting ? st.boostAccel : 0;
-  let lateral = 0;
-  if (!boosting && buttons & Button.THRUST) forward = st.thrust;
-  if (buttons & Button.BACK) forward -= st.thrust * st.backThrust;
-  if (buttons & Button.STRAFE_RIGHT) lateral += st.thrust * st.strafeThrust;
-  if (buttons & Button.STRAFE_LEFT) lateral -= st.thrust * st.strafeThrust;
-  if (forward !== 0 || lateral !== 0) result |= StepResult.THRUST;
+  const boosting = updateEnergy(s, buttons, st);
+  if (boosting) result |= StepResult.BOOST;
+  const power = s.fuel > 0 ? 1 : st.reservePower; // an empty tank leaves reserve thrusters
+  planThrust(buttons, st, boosting, power);
   const braking = (buttons & Button.BRAKE) !== 0;
+  const thrusting = thrust.forward !== 0 || thrust.lateral !== 0 || thrust.x !== 0 || thrust.y !== 0;
+  if (thrusting) result |= StepResult.THRUST;
+  burnFuel(s, st, buttons, boosting, braking);
 
   if (s.blastCooldown > 0) s.blastCooldown--;
   const blasting = (buttons & Button.BLAST) !== 0 && s.blastCooldown === 0 && s.energy >= st.blastCost;
@@ -161,13 +146,13 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fiel
   const dash = activated && st.ability === Ability.DASH;
   const charge = activated && st.ability === Ability.RAM;
   const rushing = st.ability === Ability.RAM && s.abilityTime > 0;
-  if (rushing && forward < st.thrust) forward = st.thrust; // the ram drive burns on its own
+  if (rushing && thrust.forward < st.thrust) thrust.forward = st.thrust; // the ram drive burns on its own, without fuel
 
   // Thrusters, the brake, the blast's recoil, a dash or a charge all break an
   // orbit lock, and so does an enemy singularity's pull.
   if (
     s.lockBody >= 0 &&
-    (forward !== 0 || lateral !== 0 || braking || blasting || dash || charge || (fields.length > 0 && dominantBody(s.x, s.y, fields)))
+    (thrusting || rushing || braking || blasting || dash || (fields.length > 0 && dominantBody(s.x, s.y, fields)))
   ) {
     s.lockBody = -1;
     result |= StepResult.UNLOCKED;
@@ -180,46 +165,30 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fiel
   } else {
     const ca = Math.cos(s.angle);
     const sa = Math.sin(s.angle);
-    if (forward !== 0 || lateral !== 0) {
-      const before = s.vx * s.vx + s.vy * s.vy;
-      s.vx += (ca * forward - sa * lateral) * TICK_DT;
-      s.vy += (sa * forward + ca * lateral) * TICK_DT;
-      const cap = rushing ? st.rushSpeed : boosting ? st.boostSpeed : st.maxSpeed;
-      const after = s.vx * s.vx + s.vy * s.vy;
-      if (after > cap * cap && after > before) {
-        const k = Math.max(cap, Math.sqrt(before)) / Math.sqrt(after); // steer freely, but no faster
-        s.vx *= k;
-        s.vy *= k;
-      }
-    }
+    applyThrust(s, ca, sa, rushing ? st.rushSpeed : boosting ? st.boostSpeed : st.maxSpeed);
     if (blasting) {
       s.vx -= ca * st.blastRecoil;
       s.vy -= sa * st.blastRecoil;
     }
-    if (dash) {
-      // Towards the held thrusters (forward if none), past the cruise limit like a slingshot.
-      let f = (buttons & Button.THRUST ? 1 : 0) - (buttons & Button.BACK ? 1 : 0);
-      const l = (buttons & Button.STRAFE_RIGHT ? 1 : 0) - (buttons & Button.STRAFE_LEFT ? 1 : 0);
-      if (f === 0 && l === 0) f = 1;
-      const k = st.abilityImpulse / Math.sqrt(f * f + l * l);
-      s.vx += (ca * f - sa * l) * k;
-      s.vy += (sa * f + ca * l) * k;
-    }
+    if (dash) afterburner(s, buttons, ca, sa, st.abilityImpulse);
     if (charge) {
       s.vx += ca * st.abilityImpulse;
       s.vy += sa * st.abilityImpulse;
     }
     if (braking) {
       result |= StepResult.BRAKE;
-      const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
-      if (speed > 0) {
-        const dv = Math.min(speed, st.brakeAccel * TICK_DT);
-        s.vx -= (s.vx / speed) * dv;
-        s.vy -= (s.vy / speed) * dv;
-      }
+      brake(s, st.brakeAccel * power * TICK_DT);
     }
+
+    // Gravity, then (only where gravity is weak) coasting drag.
+    const vx = s.vx;
+    const vy = s.vy;
     if (bodies.length > 0) applyGravity(s, bodies);
     if (fields.length > 0) applyGravity(s, fields);
+    if (!thrusting && !rushing) {
+      const pull = Math.sqrt((s.vx - vx) * (s.vx - vx) + (s.vy - vy) * (s.vy - vy)) / TICK_DT;
+      coast(s, st, 1 - pull / GRAVITY.edgeAccel);
+    }
 
     const speedSq = s.vx * s.vx + s.vy * s.vy;
     if (speedSq > MAX_SPEED * MAX_SPEED) {
@@ -234,6 +203,11 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fiel
       collideBodies(s, st.radius, bodies, hit);
       s.impact = hit.impact;
       s.contactBody = hit.body ? hit.body.id : -1;
+      // Resting on a planet (not the star) tops up the tank.
+      if (hit.body && hit.impact <= GRAVITY.landingSpeed && hit.body.kind !== BodyKind.STAR && s.fuel < st.fuelMax) {
+        s.fuel = Math.min(st.fuelMax, s.fuel + st.fuelRefuel);
+        result |= StepResult.REFUEL;
+      }
     } else {
       s.impact = 0;
       s.contactBody = -1;
@@ -248,6 +222,145 @@ export function stepShip(s, buttons, aim, st, bodies = NO_BODIES, tick = 0, fiel
   }
   return result;
 }
+
+/* Stages of a step ------------------------------------------------------------ */
+
+/** Turns towards the aim angle at the turn rate, or with the rotate buttons. */
+function rotate(s, buttons, aim, st) {
+  const turn = st.turnRate * TICK_DT;
+  if (buttons & Button.AIM) {
+    const d = angleDiff(aim, s.angle);
+    s.angle = normalizeAngle(s.angle + (d > turn ? turn : d < -turn ? -turn : d));
+  } else if (buttons & (Button.LEFT | Button.RIGHT)) {
+    if (buttons & Button.LEFT) s.angle -= turn;
+    if (buttons & Button.RIGHT) s.angle += turn;
+    s.angle = normalizeAngle(s.angle);
+  }
+}
+
+function toggleLock(s, st, bodies, tick) {
+  if (s.lockBody >= 0) {
+    s.lockBody = -1;
+    return StepResult.UNLOCKED;
+  }
+  return lockOrbit(s, st, bodies, tick) ? StepResult.LOCKED : StepResult.LOCK_FAILED;
+}
+
+/**
+ * Boost drains energy (and needs fuel); everything else lets energy recharge.
+ * Integers keep this exact. Returns whether the ship boosts this step.
+ */
+function updateEnergy(s, buttons, st) {
+  const boosting = (buttons & Button.BOOST) !== 0 && !s.boostLock && s.energy > 0 && s.fuel > 0;
+  if (boosting) {
+    s.energy = Math.max(0, s.energy - st.boostDrain);
+    if (s.energy === 0) s.boostLock = 1;
+  } else {
+    s.energy = Math.min(st.energyMax, s.energy + st.energyRegen);
+    if (s.boostLock && s.energy >= st.boostUnlock) s.boostLock = 0;
+  }
+  return boosting;
+}
+
+/** Works out this step's thrust from the held buttons into `thrust`, scaled by `power`. */
+function planThrust(buttons, st, boosting, power) {
+  let forward = boosting ? st.boostAccel : buttons & Button.THRUST ? st.thrust : 0;
+  let lateral = 0;
+  if (buttons & Button.BACK) forward -= st.thrust * st.backThrust;
+  if (buttons & Button.STRAFE_RIGHT) lateral += st.thrust * st.strafeThrust;
+  if (buttons & Button.STRAFE_LEFT) lateral -= st.thrust * st.strafeThrust;
+  thrust.forward = forward * power;
+  thrust.lateral = lateral * power;
+  // Screen-direction thrusters: y grows downwards on screen.
+  const mx = (buttons & Button.MOVE_RIGHT ? 1 : 0) - (buttons & Button.MOVE_LEFT ? 1 : 0);
+  const my = (buttons & Button.MOVE_DOWN ? 1 : 0) - (buttons & Button.MOVE_UP ? 1 : 0);
+  if (mx !== 0 || my !== 0) {
+    const k = (st.thrust * st.moveThrust * power) / Math.sqrt(mx * mx + my * my);
+    thrust.x = mx * k;
+    thrust.y = my * k;
+  } else {
+    thrust.x = 0;
+    thrust.y = 0;
+  }
+}
+
+/** Burns fuel for every thruster the pilot fires this step (the ram drive's own burn is free). */
+function burnFuel(s, st, buttons, boosting, braking) {
+  let burn = 0;
+  if (boosting) burn += st.fuelBurnBoost;
+  else if (buttons & (Button.THRUST | MOVE_BUTTONS)) burn += st.fuelBurnMain;
+  if (buttons & SHIP_FRAME_THRUSTERS) burn += st.fuelBurnThruster;
+  if (braking) burn += st.fuelBurnBrake;
+  if (burn > 0 && s.fuel > 0) s.fuel = Math.max(0, s.fuel - burn);
+}
+
+/**
+ * Adds this step's thrust. Thrusters steer freely but cannot raise the speed
+ * past `cap`; a ship already faster (from gravity or a dash) keeps its speed.
+ */
+function applyThrust(s, ca, sa, cap) {
+  const ax = ca * thrust.forward - sa * thrust.lateral + thrust.x;
+  const ay = sa * thrust.forward + ca * thrust.lateral + thrust.y;
+  if (ax === 0 && ay === 0) return;
+  const before = s.vx * s.vx + s.vy * s.vy;
+  s.vx += ax * TICK_DT;
+  s.vy += ay * TICK_DT;
+  const after = s.vx * s.vx + s.vy * s.vy;
+  if (after > cap * cap && after > before) {
+    const k = Math.max(cap, Math.sqrt(before)) / Math.sqrt(after);
+    s.vx *= k;
+    s.vy *= k;
+  }
+}
+
+/**
+ * The Fighter's afterburner: a kick towards the held thrusters (screen
+ * direction first, then the ship's own; forward if none), past the cruise
+ * limit like a slingshot.
+ */
+function afterburner(s, buttons, ca, sa, impulse) {
+  const mx = (buttons & Button.MOVE_RIGHT ? 1 : 0) - (buttons & Button.MOVE_LEFT ? 1 : 0);
+  const my = (buttons & Button.MOVE_DOWN ? 1 : 0) - (buttons & Button.MOVE_UP ? 1 : 0);
+  if (mx !== 0 || my !== 0) {
+    const k = impulse / Math.sqrt(mx * mx + my * my);
+    s.vx += mx * k;
+    s.vy += my * k;
+    return;
+  }
+  let f = (buttons & Button.THRUST ? 1 : 0) - (buttons & Button.BACK ? 1 : 0);
+  const l = (buttons & Button.STRAFE_RIGHT ? 1 : 0) - (buttons & Button.STRAFE_LEFT ? 1 : 0);
+  if (f === 0 && l === 0) f = 1;
+  const k = impulse / Math.sqrt(f * f + l * l);
+  s.vx += (ca * f - sa * l) * k;
+  s.vy += (sa * f + ca * l) * k;
+}
+
+/** Retro brake: slows the ship along its motion by up to `dv`, never reversing it. */
+function brake(s, dv) {
+  const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+  if (speed === 0) return;
+  const k = Math.min(speed, dv) / speed;
+  s.vx -= s.vx * k;
+  s.vy -= s.vy * k;
+}
+
+/**
+ * Coasting drag: above its coast speed, a ship with no thruster firing
+ * slows towards it. `openSpace` (1 far from every well, 0 where the pull is
+ * felt) scales it, so wells stay drag-free and the drag fades in at their edge.
+ */
+function coast(s, st, openSpace) {
+  if (openSpace <= 0) return;
+  const speedSq = s.vx * s.vx + s.vy * s.vy;
+  if (speedSq <= st.coastSpeed * st.coastSpeed) return;
+  const speed = Math.sqrt(speedSq);
+  const target = Math.max(st.coastSpeed, speed * st.coastDecay);
+  const k = (speed - (speed - target) * Math.min(1, openSpace)) / speed;
+  s.vx *= k;
+  s.vy *= k;
+}
+
+/* Orbit lock --------------------------------------------------------------------- */
 
 /**
  * Locks the ship into a circular orbit around the body pulling hardest on it,
@@ -306,10 +419,13 @@ export function followLock(s, bodies, tick) {
   s.vy = b.vy + c * v;
 }
 
+/* Weapons ------------------------------------------------------------------------ */
+
 /**
  * Computes the projectiles for one shot of `weapon` from ship state `s`.
  * Fills `out` with {x, y, vx, vy} objects (reused between calls) and returns
- * how many were written. Projectiles inherit the ship's velocity.
+ * how many were written. Shots leave the prow of the ship's hull (`st.nose`)
+ * and inherit the ship's velocity.
  */
 export function computeShots(s, weapon, st, out) {
   const muzzles = (WEAPONS[weapon] ?? WEAPONS[0]).muzzles;
@@ -319,8 +435,8 @@ export function computeShots(s, weapon, st, out) {
     const spread = muzzles[i][0];
     const lateral = muzzles[i][1];
     const shot = out[i] ?? (out[i] = { x: 0, y: 0, vx: 0, vy: 0 });
-    shot.x = wrap(s.x + ca * SHIP_NOSE - sa * lateral, WORLD_SIZE);
-    shot.y = wrap(s.y + sa * SHIP_NOSE + ca * lateral, WORLD_SIZE);
+    shot.x = wrap(s.x + ca * st.nose - sa * lateral, WORLD_SIZE);
+    shot.y = wrap(s.y + sa * st.nose + ca * lateral, WORLD_SIZE);
     const a = s.angle + spread;
     shot.vx = s.vx + Math.cos(a) * st.bulletSpeed;
     shot.vy = s.vy + Math.sin(a) * st.bulletSpeed;

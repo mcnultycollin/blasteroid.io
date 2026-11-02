@@ -23,6 +23,7 @@ import {
   damageAlien,
   damageAsteroid,
   damageShip,
+  killShip,
   refreshStats,
 } from './combat.js';
 import { Mask } from './entities.js';
@@ -105,14 +106,16 @@ function applyCommand(game, ship, buttons, aim, seq, bodies, tick, fields) {
   ship.lastAim = aim;
   if (result & StepResult.IMPACT) touchBody(game, ship);
   if (ship.dead) return;
-  if (result & (StepResult.FIRED | StepResult.BLAST | StepResult.ABILITY)) ship.revealedUntil = game.tick + NEBULA.revealAfterFire;
+  if (result & (StepResult.FIRED | StepResult.BLAST | StepResult.ABILITY)) {
+    ship.invuln = 0; // acting ends spawn protection
+    ship.revealedUntil = game.tick + NEBULA.revealAfterFire; // and gives away a pilot hiding in a nebula
+  }
   if (result & StepResult.BLAST) applyBlast(game, ship);
   if (result & StepResult.ABILITY) useAbility(game, ship, tick);
   if (result & StepResult.FIRED) fireWeapon(game, ship, seq);
 }
 
 function fireWeapon(game, ship, seq) {
-  ship.invuln = 0; // firing ends spawn protection
   const st = ship.st;
   const kind = ship.weapon === Weapon.CANNON ? BulletKind.CANNON : BulletKind.PLAYER;
   const n = computeShots(ship, ship.weapon, st, shots);
@@ -169,16 +172,16 @@ function expirePowerup(ship, p) {
 }
 
 /**
- * Surface contact from the last physics step: the star burns anything that
- * touches it, hard planet impacts hurt, and gentle touchdowns are landings.
+ * Surface contact from the last physics step: the star destroys anything that
+ * touches it (shields and spawn protection don't help), hard planet impacts
+ * hurt, and gentle touchdowns are landings.
  */
 function touchBody(game, ship) {
   const body = game.planets[ship.contactBody];
-  if (!body || ship.contactCooldown > 0) return;
+  if (!body) return;
   if (isStar(body)) {
-    ship.contactCooldown = PLANETS.burnInterval;
-    damageShip(game, ship, PLANETS.starBurn, null, KillCause.STAR, body.x, body.y);
-  } else if (ship.impact > PLANETS.crashSafeSpeed) {
+    killShip(game, ship, null, KillCause.STAR); // whoever shoved it in recently gets the credit
+  } else if (ship.impact > PLANETS.crashSafeSpeed && ship.contactCooldown === 0) {
     ship.contactCooldown = SHIP.contactCooldown;
     const damage = (ship.impact - PLANETS.crashSafeSpeed) * PLANETS.crashDamage;
     damageShip(game, ship, damage, null, KillCause.PLANET, body.x, body.y);

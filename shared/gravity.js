@@ -21,8 +21,11 @@ import { BodyKind, TICK_DT, WORLD_SIZE } from './constants.js';
 import { wrap, wrapDelta } from './math.js';
 
 export const GRAVITY = Object.freeze({
-  G: 2.54, // surface pull = G × density × radius (units/s²)
-  edgeAccel: 36.25, // a body's range ends where its inverse-square pull falls to this
+  // Pull strength: surface pull = G × density × radius (units/s²). Raising G
+  // and edgeAccel together strengthens every pull while keeping each well's
+  // size (and so the solar system's layout) the same.
+  G: 3.81,
+  edgeAccel: 54.375, // a body's range ends where its inverse-square pull falls to this
   fadeStart: 0.8, // fraction of the range at which the pull starts fading out
   landingSpeed: 60, // slower contacts settle on the surface instead of bouncing
   crashSpeed: 120, // faster impacts damage the hull
@@ -343,6 +346,10 @@ export const OrbitState = Object.freeze({ STABLE: 'stable', IMPACT: 'impact', ES
  * two-body (Kepler) solution: a stable orbit stays clear of the surface and
  * inside the range; otherwise it ends in an impact or an escape. Writes
  * {state, periapsis, apoapsis} (distances from the centre) to `out`.
+ *
+ * Kepler assumes a pure inverse-square pull. Where the pull fades out (the
+ * outer part of the well) it uses an effective mass that matches the pull
+ * felt at the ship's distance, so a circular orbit there still reads as one.
  */
 export function describeOrbit(x, y, vx, vy, body, clearance, out) {
   const rx = wrapDelta(x - body.x, WORLD_SIZE);
@@ -350,7 +357,7 @@ export function describeOrbit(x, y, vx, vy, body, clearance, out) {
   const r = Math.sqrt(rx * rx + ry * ry) || 1;
   const rvx = vx - body.vx;
   const rvy = vy - body.vy;
-  const mu = body.gm;
+  const mu = r > body.fadeFrom ? Math.max(1e-9, pullAt(body, r) * r * r) : body.gm;
   const energy = (rvx * rvx + rvy * rvy) / 2 - mu / r;
   const h = rx * rvy - ry * rvx;
   if (energy >= 0) {

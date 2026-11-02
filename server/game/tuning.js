@@ -89,10 +89,12 @@ export const MOTHERSHIP = Object.freeze({
 export const PLANETS = Object.freeze({
   star: { radius: 200, density: 0.64 },
   // [min, max] radius and density per planet type. Mass ∝ density × radius³.
+  // Surface pulls stay below base thrust (680) except on the core, which only
+  // a boost (1292) can always escape.
   types: {
-    core: { radius: [70, 92], density: [2.8, 3.4] }, // small, but pulls hardest (may out-pull base thrust)
-    rock: { radius: [120, 160], density: [0.9, 1.3] },
-    gas: { radius: [200, 235], density: [0.4, 0.58] }, // huge and light, gentle pull
+    core: { radius: [70, 92], density: [2.5, 3.3] }, // small, but pulls hardest: 670–1160 at the surface
+    rock: { radius: [120, 160], density: [0.8, 1.05] }, // 370–640 at the surface
+    gas: { radius: [200, 235], density: [0.4, 0.58] }, // huge and light: 300–520 at the surface
   },
   wellGap: 90, // clear space between neighbouring gravity wells
   // Orbital periods around the star. The rocky world and the gas giant share
@@ -104,8 +106,7 @@ export const PLANETS = Object.freeze({
   beltMassPerRange: 1 / 28, // orbiting rock mass kept around a planet, per unit of range
   crashSafeSpeed: GRAVITY.crashSpeed, // touching down slower than this is a landing
   crashDamage: 0.22, // hull damage per unit of impact speed above the safe speed
-  starBurn: 18, // hull damage per burn while touching the star...
-  burnInterval: seconds(0.1), // ...one burn every this many ticks
+  // Touching the star destroys a ship (or saucer) outright, shields or not.
 });
 
 /** The kinetic blast (P): a cone of force in front of the ship. */
@@ -180,6 +181,17 @@ export const ABILITY = Object.freeze({
   crushRocks: 1.2,
   crushAliens: 1,
   maxFields: 8,
+});
+
+/** Fuel: where ships get it besides landing on a planet (see stats.js for tanks and burn rates). */
+export const FUEL = Object.freeze({
+  cell: 1400, // a fuel cell refills this much
+  cellLife: seconds(90),
+  shipDrop: 2, // cells a destroyed ship leaves behind
+  rockDropChance: 0.2, // for a large asteroid
+  worldCellsBase: 5, // cells kept floating in open space...
+  shipsPerWorldCell: 5, // ...plus one per this many ships
+  outpostRefuel: 20, // per tick for pilots in their own team's outpost zone
 });
 
 export const PICKUP = Object.freeze({

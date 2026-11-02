@@ -179,6 +179,11 @@ test('describeOrbit tells stable orbits from crashes and escapes', () => {
   assert.equal(out.state, OrbitState.IMPACT);
   describeOrbit(3000 + r, 3000, 0, v * 1.5, rocky, 46, out);
   assert.equal(out.state, OrbitState.ESCAPE);
+  // In the fade zone at the edge of the well a circular orbit is still stable, not a descent.
+  const outer = (rocky.fadeFrom + rocky.range) / 2;
+  describeOrbit(3000 + outer, 3000, 0, Math.sqrt(pullAt(rocky, outer) * outer), rocky, 46, out);
+  assert.equal(out.state, OrbitState.STABLE);
+  assert.ok(Math.abs(out.periapsis - outer) < 1e-3);
   // Relative to a moving planet, the same relative motion gives the same answer.
   const mover = orbitingBody(0, 4000, 4000, 1500, 9000, 160, 1);
   setPose(mover, 4321);

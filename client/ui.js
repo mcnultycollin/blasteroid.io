@@ -4,10 +4,16 @@
  * only ever goes into textContent.
  */
 import { CLASSES, CLASS_COUNT } from '../shared/stats.js';
+import { ThrusterMode } from './input.js';
 import { traceHull, traceHullDetails } from './renderer.js';
 
 const NAME_KEY = 'blasteroid.name';
 const CLASS_KEY = 'blasteroid.class';
+const THRUSTER_KEY = 'blasteroid.thrusters';
+const THRUSTER_TEXT = {
+  [ThrusterMode.SCREEN]: ['up · left · down · right on screen', 'They push the same way on screen whichever way your ship faces.'],
+  [ThrusterMode.SHIP]: ['forward · left · back · right of the ship', 'They push relative to your nose, so their directions turn with the ship.'],
+};
 
 function readStorage(key) {
   try {
@@ -26,7 +32,10 @@ function writeStorage(key, value) {
 }
 
 export class Ui {
-  /** `handlers.play(name)` is called when the player asks to (re)spawn. */
+  /**
+   * `handlers.play(name)` is called when the player asks to (re)spawn;
+   * `handlers.thrusterMode(mode)` when the W/A/S/D setting changes.
+   */
   constructor(handlers) {
     const $ = (id) => document.getElementById(id);
     this.menu = $('menu');
@@ -42,12 +51,22 @@ export class Ui {
     this.toast = $('toast');
     this.devHint = $('dev-hint');
     this.teamNote = $('team-note');
+    this.thrusterButton = $('thruster-mode');
+    this.thrusterHint = $('thruster-hint');
 
     this.nameInput.value = readStorage(NAME_KEY);
     const saved = Number.parseInt(readStorage(CLASS_KEY), 10);
     this.selectedClass = saved >= 0 && saved < CLASS_COUNT ? saved : 0;
     this.pickers = [this.buildPicker($('classes'), $('class-desc')), this.buildPicker($('death-classes'), $('death-class-desc'))];
     this.selectClass(this.selectedClass);
+
+    const mode = readStorage(THRUSTER_KEY);
+    this.thrusters = THRUSTER_TEXT[mode] ? mode : ThrusterMode.SCREEN;
+    this.onThrusterMode = handlers.thrusterMode;
+    this.thrusterButton.addEventListener('click', () =>
+      this.setThrusterMode(this.thrusters === ThrusterMode.SCREEN ? ThrusterMode.SHIP : ThrusterMode.SCREEN),
+    );
+    this.setThrusterMode(this.thrusters);
     this.form.addEventListener('submit', (e) => {
       e.preventDefault();
       handlers.play(this.name());
@@ -97,6 +116,16 @@ export class Ui {
       ability.textContent = `[E] ${c.ability.name}`;
       desc.replaceChildren(ability, ` · ${c.desc}`);
     }
+  }
+
+  /** The W/A/S/D thruster mode (see ThrusterMode), shown on the menu and remembered. */
+  setThrusterMode(mode) {
+    this.thrusters = mode;
+    writeStorage(THRUSTER_KEY, mode);
+    const [label, hint] = THRUSTER_TEXT[mode];
+    this.thrusterButton.textContent = label;
+    this.thrusterHint.textContent = `${hint} Click to switch.`;
+    this.onThrusterMode?.(mode);
   }
 
   setTeams(enabled) {

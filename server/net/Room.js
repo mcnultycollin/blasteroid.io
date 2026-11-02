@@ -78,7 +78,7 @@ export class Room {
         const count = r.u8();
         if (count > MAX_COMMANDS_PER_MESSAGE) throw new RangeError('too many commands');
         for (let i = 0; i < count; i++) {
-          const buttons = r.u16() & BUTTON_MASK;
+          const buttons = r.u32() & BUTTON_MASK;
           const aim = dqAngle(r.u16());
           if (player) game.queueInput(player, first + i, buttons, aim);
         }

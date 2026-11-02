@@ -94,6 +94,7 @@ export function spawnShip(game, player, spot = null) {
   }
   ship.hp = ship.maxHp = ship.st.maxHp;
   ship.energy = ship.st.energyMax;
+  ship.fuel = ship.st.fuelMax;
   ship.invuln = SHIP.spawnInvuln;
   ship.spawnTick = ship.lastActiveTick = game.tick;
   if (!game.add(game.ships, ship)) return null;

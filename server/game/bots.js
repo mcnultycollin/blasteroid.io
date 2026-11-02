@@ -5,9 +5,11 @@
  *
  * In team games they play the objectives: they fight enemies they can see,
  * capture and defend outposts, shelter from solar flares behind planets, heal
- * teammates (Medics) and use their class abilities.
+ * teammates (Medics) and use their class abilities. They watch their fuel:
+ * running low, they grab fuel cells, hover in a friendly outpost or land on
+ * a planet to refuel.
  */
-import { Button, EntityType, NO_TEAM, OUTPOST_RADIUS, RoundPhase, TICK_RATE, WORLD_SIZE } from '../../shared/constants.js';
+import { Button, EntityType, NO_TEAM, OUTPOST_RADIUS, PickupKind, RoundPhase, TICK_RATE, WORLD_SIZE } from '../../shared/constants.js';
 import { isStar } from '../../shared/gravity.js';
 import { TAU, angleDiff, clamp, interceptTime, lerp, normalizeAngle, wrapDelta } from '../../shared/math.js';
 import { exposedToFlare, nightSide, starOf } from '../../shared/terrain.js';
@@ -31,7 +33,10 @@ const BUILDS = [
   [Stat.ENGINE, Stat.HANDLING, Stat.RELOAD, Stat.DAMAGE, Stat.ENERGY, Stat.HULL, Stat.VELOCITY, Stat.REPAIR],
 ];
 
-const Mode = Object.freeze({ WANDER: 0, FARM: 1, FIGHT: 2, FLEE: 3, LOOT: 4, OBJECTIVE: 5, HEAL: 6 });
+const Mode = Object.freeze({ WANDER: 0, FARM: 1, FIGHT: 2, FLEE: 3, LOOT: 4, OBJECTIVE: 5, HEAL: 6, REFUEL: 7 });
+const REFUEL_BELOW = 0.22; // share of the tank at which a bot heads off to refuel...
+const REFUEL_UNTIL = 0.9; // ...and how full it gets before leaving
+const LANDING_SPEED = 45; // relative speed for a gentle touchdown
 
 /** Draws a ship class from BOT.classWeights. */
 export function drawClass(rng) {
@@ -79,6 +84,8 @@ export class BotBrain {
     this.objectiveBias = 0.3 + rng() * 0.7; // how much they care about outposts over farming
     this.objective = -1; // outpost index while playing the objective
     this.shelter = null; // planet to hide behind during a solar flare
+    this.depot = null; // where to refuel (this.depotChoice), or null
+    this.depotChoice = { outpost: -1, planet: null };
     this.build = BUILDS[Math.floor(rng() * BUILDS.length)];
     this.mode = Mode.WANDER;
     this.target = null;
@@ -150,17 +157,24 @@ export class BotBrain {
           }
           break;
         }
-        case EntityType.PICKUP:
-          if (dist < 500 && dist < lootDist) {
+        case EntityType.PICKUP: {
+          // Fuel cells are worth a detour when the tank is getting low.
+          const reach = e.kind === PickupKind.FUEL && ship.fuel < ship.st.fuelMax * 0.5 ? 900 : 500;
+          if (dist < reach && dist < lootDist) {
             loot = e;
             lootDist = dist;
           }
           break;
+        }
       }
     }
 
     const objective = this.pickObjective(game, ship);
+    const fuel = ship.fuel / ship.st.fuelMax;
+    const refuel = (this.mode === Mode.REFUEL ? fuel < REFUEL_UNTIL : fuel < REFUEL_BELOW) && !(enemy && enemyDist < 350);
     if (enemy && ship.hp < ship.maxHp * 0.3 && this.skill > 0.4) this.setMode(game, Mode.FLEE, enemy);
+    else if (refuel && loot && loot.kind === PickupKind.FUEL) this.setMode(game, Mode.LOOT, loot);
+    else if (refuel && (this.depot = this.findDepot(game, ship))) this.setMode(game, Mode.REFUEL, null);
     else if (patient && (!enemy || patientNeed < 0.45)) this.setMode(game, Mode.HEAL, patient);
     else if (enemy) this.setMode(game, Mode.FIGHT, enemy);
     else if (loot) this.setMode(game, Mode.LOOT, loot);
@@ -216,6 +230,39 @@ export class BotBrain {
       }
     }
     return best;
+  }
+
+  /**
+   * Where to refuel: the nearest outpost our team holds (hovering in its zone
+   * refuels), otherwise the nearest planet gentle enough to land on.
+   */
+  findDepot(game, ship) {
+    const m = game.match;
+    const choice = this.depotChoice;
+    let found = false;
+    let bestDist = Infinity;
+    for (let i = 0; i < m.outposts.length; i++) {
+      if (m.outposts[i].owner !== ship.team || ship.team === NO_TEAM) continue;
+      const p = outpostPoint(game, i, spot);
+      const d = Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE));
+      if (d < bestDist) {
+        bestDist = d;
+        choice.outpost = i;
+        choice.planet = null;
+        found = true;
+      }
+    }
+    for (const p of game.planets) {
+      if (isStar(p) || p.surfacePull > ship.st.thrust * 0.85) continue; // too steep to land on safely
+      const d = (Math.hypot(wrapDelta(p.x - ship.x, WORLD_SIZE), wrapDelta(p.y - ship.y, WORLD_SIZE)) - p.radius) * 1.3; // outposts first
+      if (d < bestDist) {
+        bestDist = d;
+        choice.outpost = -1;
+        choice.planet = p;
+        found = true;
+      }
+    }
+    return found ? choice : null;
   }
 
   /** During a flare warning: the planet whose shadow to hide in, if we are exposed. */
@@ -322,10 +369,21 @@ export class BotBrain {
           break;
         }
       }
-    } else if (this.mode === Mode.OBJECTIVE && this.objective >= 0 && this.objective < game.match.outposts.length) {
+    } else if (this.mode === Mode.REFUEL && this.depot?.planet) {
+      // Land gently on the planet, then sit there (riding along with it) while the tank fills.
+      const planet = this.depot.planet;
+      const dx = wrapDelta(planet.x - ship.x, WORLD_SIZE);
+      const dy = wrapDelta(planet.y - ship.y, WORLD_SIZE);
+      const dist = Math.hypot(dx, dy) || 1;
+      const gap = dist - planet.radius - ship.radius;
+      const speed = ship.contactBody === planet.id ? 0 : gap < 140 ? LANDING_SPEED : Math.min(300, gap * 1.3);
+      vx = planet.vx + (dx / dist) * speed;
+      vy = planet.vy + (dy / dist) * speed;
+    } else if ((this.mode === Mode.OBJECTIVE || this.mode === Mode.REFUEL) && this.holdIndex() >= 0) {
       // Hold position in the capture zone, moving with the outpost's planet.
-      const p = outpostPoint(game, this.objective, spot);
-      const planet = game.planets[game.terrain.outposts[this.objective].planet];
+      const index = this.holdIndex();
+      const p = outpostPoint(game, index, spot);
+      const planet = game.planets[game.terrain.outposts[index].planet];
       const dx = wrapDelta(p.x + p.nx * 70 - ship.x, WORLD_SIZE);
       const dy = wrapDelta(p.y + p.ny * 70 - ship.y, WORLD_SIZE);
       const dist = Math.hypot(dx, dy) || 1;
@@ -368,21 +426,23 @@ export class BotBrain {
         if (closing > 60) buttons |= this.blast(game, ship, Math.atan2(dy, dx));
       }
     }
-    // Pull up before hitting a planet or the star: gravity makes a dive hard to recover from.
+    // Pull up before hitting a planet or the star: gravity makes a dive hard to
+    // recover from, the more so the harder the body pulls. (Not while landing on it.)
     const p = this.planet;
-    if (p) {
+    if (p && !(this.mode === Mode.REFUEL && this.depot?.planet === p)) {
       const dx = wrapDelta(p.x - ship.x, WORLD_SIZE);
       const dy = wrapDelta(p.y - ship.y, WORLD_SIZE);
       const dist = Math.hypot(dx, dy) || 1;
       const closing = ((ship.vx - p.vx) * dx + (ship.vy - p.vy) * dy) / dist;
       const star = isStar(p);
-      const margin = (star ? 200 : 90) + Math.max(0, closing) * (star ? 0.6 : 0.45);
+      const steep = p.surfacePull / ship.st.thrust; // above 1, only a boost climbs out
+      const margin = star ? 220 + Math.max(0, closing) * 0.6 : 70 + 140 * steep + Math.max(0, closing) * 0.5;
       if (dist - p.radius < margin) {
         const away = 240 + Math.max(0, closing);
         vx = p.vx - (dx / dist) * away;
         vy = p.vy - (dy / dist) * away;
         free = true;
-        boost = star || closing > 150;
+        boost = star || closing > 150 || steep > 1;
       }
     }
     if (free) {
@@ -404,22 +464,29 @@ export class BotBrain {
     const ex = vx - ship.vx;
     const ey = vy - ship.vy;
     const err = Math.hypot(ex, ey);
-    if (err < 20) return buttons;
+    // Small errors aren't worth the fuel, and less so as the tank empties.
+    if (err < 20 + 60 * (1 - ship.fuel / ship.st.fuelMax)) return buttons;
     const ca = Math.cos(ship.angle);
     const sa = Math.sin(ship.angle);
     const ahead = (ex * ca + ey * sa) / err; // cosine between the nose and the needed change
-    const right = (ey * ca - ex * sa) / err;
     const speed = Math.hypot(ship.vx, ship.vy);
     if (speed > 40 && ex * ship.vx + ey * ship.vy < -0.85 * err * speed) {
       return buttons | Button.BRAKE; // wanted: (much) less of the current motion
     }
     if (boost && ahead > 0.8 && !ship.boostLock && ship.energy > 0) return buttons | Button.BOOST;
     if (!this.thrusters) return ahead > 0.7 ? buttons | Button.THRUST : buttons;
-    if (ahead > 0.38) buttons |= Button.THRUST;
-    else if (ahead < -0.38) buttons |= Button.BACK;
-    if (right > 0.38) buttons |= Button.STRAFE_RIGHT;
-    else if (right < -0.38) buttons |= Button.STRAFE_LEFT;
+    // Screen-direction thrusters push straight towards the needed change, whatever the nose does.
+    if (ex > err * 0.38) buttons |= Button.MOVE_RIGHT;
+    else if (ex < -err * 0.38) buttons |= Button.MOVE_LEFT;
+    if (ey > err * 0.38) buttons |= Button.MOVE_DOWN;
+    else if (ey < -err * 0.38) buttons |= Button.MOVE_UP;
     return buttons;
+  }
+
+  /** The outpost to hold: the objective, or the friendly outpost we refuel at. */
+  holdIndex() {
+    if (this.mode === Mode.OBJECTIVE) return this.objective;
+    return this.mode === Mode.REFUEL && this.depot && this.depot.outpost >= 0 ? this.depot.outpost : -1;
   }
 
   /**
@@ -472,7 +539,11 @@ export class BotBrain {
     this.abilityAfter = game.tick + Math.round(TICK_RATE * (2.5 - 2 * this.skill));
     if (this.rng() > 0.35 + this.skill) return 0; // hesitated
     let buttons = Button.ABILITY;
-    if (ship.st.ability === Ability.DASH) buttons |= this.rng() < 0.5 ? Button.STRAFE_LEFT : Button.STRAFE_RIGHT;
+    if (ship.st.ability === Ability.DASH) {
+      // Dodge sideways relative to the threat: the afterburner kicks towards the held screen thruster.
+      const a = ship.angle + (this.rng() < 0.5 ? -1 : 1) * (Math.PI / 2);
+      buttons |= Math.abs(Math.cos(a)) > Math.abs(Math.sin(a)) ? (Math.cos(a) > 0 ? Button.MOVE_RIGHT : Button.MOVE_LEFT) : Math.sin(a) > 0 ? Button.MOVE_DOWN : Button.MOVE_UP;
+    }
     return buttons;
   }
 
@@ -548,8 +619,16 @@ export function maintainBots(game) {
     player.brain = new BotBrain(game.rng);
     player.wantsSpawn = true;
   }
-  if (active > wanted && weakest) {
-    weakest.retiring = true;
+  if (active > wanted) {
+    // Retire the weakest bot, from the bigger team in team games, so teams stay even.
+    const sizes = game.match.teams ? teamSizes(game) : null;
+    const big = sizes ? (sizes[0] > sizes[1] ? 0 : sizes[1] > sizes[0] ? 1 : NO_TEAM) : NO_TEAM;
+    let pick = null;
+    for (const p of game.players.values()) {
+      if (!p.isBot || p.retiring || (big !== NO_TEAM && p.team !== big)) continue;
+      if (!pick || (p.ship?.score ?? -1) < (pick.ship?.score ?? -1)) pick = p;
+    }
+    (pick ?? weakest).retiring = true;
     return;
   }
   // Keep teams even: a bot on the bigger team retires and the next check adds one to the smaller.

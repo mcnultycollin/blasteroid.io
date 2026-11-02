@@ -21,7 +21,7 @@ import { orbitAngle, orbitState } from '../../shared/gravity.js';
 import { makeOrbit, orbitBand } from './planets.js';
 import { randomVelocity, spawnAsteroid, spawnPickup } from './spawning.js';
 import { addTeamScore } from './teams.js';
-import { ASTEROID, PICKUP, POWERUP, REWARD, ROUND, SHIP } from './tuning.js';
+import { ASTEROID, FUEL, PICKUP, POWERUP, REWARD, ROUND, SHIP } from './tuning.js';
 
 const POWERUP_KINDS = [PickupKind.SHIELD, PickupKind.RAPID, PickupKind.REPAIR, PickupKind.OVERDRIVE];
 const velocity = { vx: 0, vy: 0 };
@@ -116,6 +116,7 @@ export function killShip(game, ship, attacker, cause) {
   }
   if (killer && killer.team !== ship.team) addTeamScore(game, killer.team, ROUND.killPoints);
   dropOrbs(game, ship.x, ship.y, ship.score * REWARD.dropShare);
+  for (let i = 0; i < FUEL.shipDrop; i++) dropFuel(game, ship.x, ship.y, 60);
 
   const player = ship.player;
   const killerId = killer ? killer.playerId : NO_ID;
@@ -174,6 +175,7 @@ export function destroyAsteroid(game, asteroid, attacker) {
     }
   }
   if (size === 2 && game.rng() < ASTEROID.powerupChance) dropPowerup(game, asteroid.x, asteroid.y);
+  else if (size === 2 && game.rng() < FUEL.rockDropChance) dropFuel(game, asteroid.x, asteroid.y);
 }
 
 /**
@@ -271,6 +273,16 @@ export function dropPowerup(game, x, y, scatter = 0, kind = -1) {
   spawnPickup(game, kind, scratchPoint.x, scratchPoint.y, 0, PICKUP.powerupLife);
 }
 
+/** Leaves a fuel cell near (x, y), within `scatter` units. */
+export function dropFuel(game, x, y, scatter = 0) {
+  const a = game.rng() * TAU;
+  const d = scatter * game.rng();
+  scratchPoint.x = wrap(x + Math.cos(a) * d, WORLD_SIZE);
+  scratchPoint.y = wrap(y + Math.sin(a) * d, WORLD_SIZE);
+  clearOfPlanets(game, scratchPoint, 18);
+  return spawnPickup(game, PickupKind.FUEL, scratchPoint.x, scratchPoint.y, 0, FUEL.cellLife);
+}
+
 export function collectPickup(game, ship, pickup) {
   pickup.dead = true;
   pickup.removeReason = RemoveReason.COLLECTED;
@@ -298,6 +310,9 @@ export function collectPickup(game, ship, pickup) {
     case PickupKind.REPAIR:
       ship.hp = Math.min(ship.maxHp, ship.hp + ship.maxHp * POWERUP.repairFraction);
       break;
+    case PickupKind.FUEL:
+      ship.fuel = Math.min(ship.st.fuelMax, ship.fuel + FUEL.cell); // the self block carries it every snapshot
+      return;
   }
   ship.statsVersion++;
 }

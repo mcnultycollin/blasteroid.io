@@ -10,7 +10,6 @@ import {
   PICKUP_RADIUS,
   POWERUP_COUNT,
   RemoveReason,
-  SHIP_RADIUS,
 } from '../../shared/constants.js';
 import { NO_ID } from '../../shared/protocol.js';
 import { STAT_COUNT, Weapon, deriveStats } from '../../shared/stats.js';
@@ -49,7 +48,7 @@ class Entity {
 
 export class Ship extends Entity {
   constructor(player) {
-    super(EntityType.SHIP, SHIP_RADIUS);
+    super(EntityType.SHIP, 0); // the hull size comes from the class (set below)
     this.player = player;
     this.playerId = player.id;
     this.team = player.team;
@@ -58,6 +57,7 @@ export class Ship extends Entity {
     // Prediction state (see shared/physics.js)
     this.angle = 0;
     this.energy = 0;
+    this.fuel = 0;
     this.cooldown = 0;
     this.boostLock = 0;
     this.blastCooldown = 0;

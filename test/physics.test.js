@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BUTTON_MASK, BodyKind, Button, SHIP_NOSE, TICK_DT, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
-import { poseBodies, pullAt, setPose } from '../shared/gravity.js';
+import { BUTTON_MASK, BodyKind, Button, TICK_DT, TICK_RATE, WORLD_SIZE } from '../shared/constants.js';
+import { applyGravity, poseBodies, pullAt, setPose } from '../shared/gravity.js';
 import { createRng } from '../shared/math.js';
 import { LOCK_CLEARANCE, StepResult, computeShots, copyShipState, createShipState, stepShip } from '../shared/physics.js';
 import { dqAngle, qAngle } from '../shared/protocol.js';
-import { STAT_COUNT, Stat, Weapon, deriveStats } from '../shared/stats.js';
+import { CLASSES, STAT_COUNT, ShipClass, Stat, Weapon, deriveStats } from '../shared/stats.js';
 import { fixedBody, orbitingBody } from './helpers.js';
 
 const levels = new Uint8Array(STAT_COUNT);
@@ -17,18 +17,44 @@ function freshShip(x = 1000, y = 1000) {
   s.x = x;
   s.y = y;
   s.energy = st.energyMax;
+  s.fuel = st.fuelMax;
   return s;
 }
 
 /* Flight -------------------------------------------------------------------- */
 
-test('space has no drag: a ship coasts forever once its engines stop', () => {
+test('engines off in open space: a fast ship slows to its coast speed, then holds it', () => {
   const s = freshShip();
-  s.vx = 123;
-  s.vy = -45;
-  for (let i = 0; i < TICK_RATE * 20; i++) stepShip(s, 0, 0, st);
-  assert.equal(s.vx, 123);
-  assert.equal(s.vy, -45);
+  s.vx = 300;
+  s.vy = -300;
+  stepShip(s, 0, 0, st);
+  assert.ok(speed(s) < Math.hypot(300, 300), 'slowing');
+  for (let i = 0; i < TICK_RATE * 10; i++) stepShip(s, 0, 0, st);
+  assert.ok(Math.abs(speed(s) - st.coastSpeed) < 1e-6, `coasting at ${speed(s).toFixed(1)}`);
+  assert.ok(Math.abs(s.vx + s.vy) < 1e-9, 'without changing direction');
+  const slow = freshShip();
+  slow.vx = st.coastSpeed * 0.5;
+  for (let i = 0; i < TICK_RATE * 5; i++) stepShip(slow, 0, 0, st);
+  assert.equal(slow.vx, st.coastSpeed * 0.5, 'below the coast speed nothing slows it');
+  const braking = freshShip();
+  braking.vx = 400;
+  stepShip(braking, Button.BRAKE, 0, st);
+  assert.ok(braking.vx < 400 - st.brakeAccel * TICK_DT + 1e-9, 'the brake works on top');
+});
+
+test('inside a gravity well there is no coasting drag: only gravity changes the motion', () => {
+  const planet = fixedBody(0, 3000, 3000, 140, 1);
+  const s = freshShip(3000 + 260, 3000);
+  s.vy = 600; // far above the coast speed
+  const manual = { x: s.x, y: s.y, vx: s.vx, vy: s.vy };
+  for (let i = 0; i < 30; i++) {
+    stepShip(s, 0, 0, st, [planet]);
+    applyGravity(manual, [planet]);
+    manual.x += manual.vx * TICK_DT;
+    manual.y += manual.vy * TICK_DT;
+  }
+  assert.equal(s.vx, manual.vx);
+  assert.equal(s.vy, manual.vy);
 });
 
 test('thrusters push up to cruise speed and no further; boost goes faster', () => {
@@ -50,7 +76,27 @@ test('at full speed the thrusters still steer: the heading changes, the speed do
   assert.ok(speed(s) <= st.maxSpeed + 1e-9);
 });
 
-test('W, S, A and D fire forward, reverse and lateral thrusters relative to the nose', () => {
+test('screen-direction thrusters push up, down, left and right whatever the heading', () => {
+  const k = st.thrust * st.moveThrust * TICK_DT;
+  for (const angle of [0, 1.1, 2.9, -2]) {
+    const push = (buttons) => {
+      const s = freshShip();
+      s.angle = angle;
+      stepShip(s, buttons, 0, st);
+      return [s.vx, s.vy];
+    };
+    const [ux, uy] = push(Button.MOVE_UP);
+    assert.ok(Math.abs(ux) < 1e-9 && Math.abs(uy + k) < 1e-9, 'up is up on screen (-y)');
+    const [rx, ry] = push(Button.MOVE_RIGHT);
+    assert.ok(Math.abs(rx - k) < 1e-9 && Math.abs(ry) < 1e-9, 'right is right');
+    const [dx, dy] = push(Button.MOVE_DOWN | Button.MOVE_LEFT);
+    assert.ok(Math.abs(dx + k / Math.SQRT2) < 1e-9 && Math.abs(dy - k / Math.SQRT2) < 1e-9, 'diagonals are no stronger');
+    const [nx, ny] = push(Button.MOVE_UP | Button.MOVE_DOWN);
+    assert.ok(nx === 0 && ny === 0, 'opposites cancel');
+  }
+});
+
+test('ship-frame thrusters (W, S, A, D in ship mode) push relative to the nose', () => {
   const angle = 0.7;
   const push = (buttons) => {
     const s = freshShip();
@@ -143,7 +189,7 @@ test('computeShots places projectiles at the muzzle with inherited velocity', ()
   s.vx = 100;
   const out = [];
   assert.equal(computeShots(s, Weapon.BLASTER, st, out), 1);
-  assert.ok(Math.abs(out[0].x - (1000 + SHIP_NOSE)) < 1e-9);
+  assert.ok(Math.abs(out[0].x - (1000 + st.nose)) < 1e-9);
   assert.ok(Math.abs(out[0].vx - (100 + st.bulletSpeed)) < 1e-9);
   assert.equal(computeShots(s, Weapon.TWIN, st, out), 2);
   assert.ok(out[0].y < s.y && out[1].y > s.y, 'twin muzzles sit either side of the nose');
@@ -302,4 +348,91 @@ test('an unpowered ship falls onto a moving planet and rides along on its surfac
   assert.ok(Math.hypot(posed[0].x - start.x, posed[0].y - start.y) > 200, 'the planet travelled on');
   assert.ok(height() < st.radius + 1, 'and the ship stayed on it');
   assert.ok(Math.hypot(s.vx - posed[0].vx, s.vy - posed[0].vy) < 15, 'moving with it');
+});
+
+/* Muzzles and fuel ---------------------------------------------------------------- */
+
+test('every class fires from the prow of its own hull', () => {
+  for (let c = 0; c < CLASSES.length; c++) {
+    const cst = deriveStats(levels, Weapon.BLASTER, false, false, {}, c);
+    const s = freshShip();
+    const out = [];
+    computeShots(s, Weapon.BLASTER, cst, out);
+    assert.equal(out[0].x, 1000 + CLASSES[c].nose, CLASSES[c].name);
+    assert.ok(CLASSES[c].nose >= CLASSES[c].radius, `${CLASSES[c].name}: outside the hull's body`);
+  }
+});
+
+test('thrusters burn integer fuel; coasting and turning are free', () => {
+  const burn = (buttons) => {
+    const s = freshShip();
+    stepShip(s, buttons, 0, st);
+    return st.fuelMax - s.fuel;
+  };
+  assert.equal(burn(0), 0);
+  assert.equal(burn(Button.LEFT | Button.FIRE), 0, 'turning and firing cost no fuel');
+  assert.equal(burn(Button.THRUST), st.fuelBurnMain);
+  assert.equal(burn(Button.MOVE_UP | Button.MOVE_LEFT), st.fuelBurnMain, 'screen thrusters cost like the main engine');
+  assert.equal(burn(Button.BOOST), st.fuelBurnBoost);
+  assert.equal(burn(Button.STRAFE_LEFT | Button.BACK), st.fuelBurnThruster);
+  assert.equal(burn(Button.BRAKE), st.fuelBurnBrake);
+  assert.equal(burn(Button.THRUST | Button.STRAFE_RIGHT | Button.BRAKE), st.fuelBurnMain + st.fuelBurnThruster + st.fuelBurnBrake);
+  let ticks = 0;
+  const s = freshShip();
+  while (s.fuel > 0) {
+    stepShip(s, Button.THRUST, 0, st);
+    ticks++;
+  }
+  assert.equal(ticks, Math.ceil(st.fuelMax / st.fuelBurnMain), 'the tank lasts as long as it should');
+  assert.ok(st.fuelMax / st.fuelBurnMain / TICK_RATE > 15, 'over 15 s of main engine');
+});
+
+test('an empty tank leaves weak reserve thrusters and no boost', () => {
+  const s = freshShip();
+  s.fuel = 0;
+  stepShip(s, Button.THRUST, 0, st);
+  assert.ok(Math.abs(s.vx - st.thrust * st.reservePower * TICK_DT) < 1e-9, 'reserve power');
+  const b = freshShip();
+  b.fuel = 0;
+  assert.equal(stepShip(b, Button.BOOST, 0, st) & StepResult.BOOST, 0, 'no boost without fuel');
+  assert.equal(b.energy, st.energyMax, 'and no energy spent on it');
+  const r = freshShip();
+  r.fuel = 0;
+  r.vx = 150; // below the coast speed, so only the brake slows it
+  stepShip(r, Button.BRAKE, 0, st);
+  assert.ok(Math.abs(r.vx - (150 - st.brakeAccel * st.reservePower * TICK_DT)) < 1e-9, 'the brake runs on reserve too');
+});
+
+test('resting on a planet refuels; the star does not', () => {
+  const planet = fixedBody(0, 3000, 3000, 140, 1);
+  const s = freshShip(3000 + 140 + st.radius + 1, 3000);
+  s.fuel = 100;
+  let result = 0;
+  for (let i = 0; i < 10; i++) result = stepShip(s, 0, 0, st, [planet]);
+  assert.ok(result & StepResult.REFUEL, 'reported for the HUD');
+  assert.ok(s.fuel >= 100 + st.fuelRefuel * 5, `refuelled to ${s.fuel}`);
+  for (let i = 0; i < TICK_RATE * 10; i++) stepShip(s, 0, 0, st, [planet]);
+  assert.equal(s.fuel, st.fuelMax, 'up to a full tank');
+  const star = fixedBody(0, 3000, 3000, 200, 0.64, BodyKind.STAR);
+  const burning = freshShip(3000 + 200 + st.radius + 1, 3000);
+  burning.fuel = 100;
+  for (let i = 0; i < 10; i++) stepShip(burning, 0, 0, st, [star]);
+  assert.equal(burning.fuel, 100);
+});
+
+test('the Breaker’s ram drive burns its own fuel-free charge', () => {
+  const bst = deriveStats(levels, Weapon.BLASTER, false, false, {}, ShipClass.BREAKER);
+  const s = freshShip();
+  s.fuel = 500;
+  stepShip(s, Button.ABILITY, 0, bst);
+  for (let i = 0; i < 20; i++) stepShip(s, 0, 0, bst);
+  assert.equal(s.fuel, 500);
+  assert.ok(s.vx > bst.maxSpeed, 'still charging');
+});
+
+test('engine upgrades and heavier classes carry bigger tanks', () => {
+  const upgraded = Uint8Array.from(levels);
+  upgraded[Stat.ENGINE] = 5;
+  assert.ok(deriveStats(upgraded, Weapon.BLASTER, false, false).fuelMax > st.fuelMax);
+  assert.ok(deriveStats(levels, Weapon.BLASTER, false, false, {}, ShipClass.BREAKER).fuelMax > st.fuelMax);
 });

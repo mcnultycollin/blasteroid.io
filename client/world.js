@@ -155,6 +155,12 @@ export class ClientEntity {
     this.hitFlash = 0;
     this.createdAt = now;
     this.predictedHit = false;
+    // Visual-only offsets: a ship's carry along with a planet (see carryWithBody),
+    // and for our own projectiles the prediction smoothing still being blended out.
+    this.carryX = 0;
+    this.carryY = 0;
+    this.offsetX = 0;
+    this.offsetY = 0;
   }
 
   pushSample(tick, x, y, angle) {
@@ -342,7 +348,7 @@ export class ClientWorld {
         break;
       case EntityType.BULLET:
         if (e.own) this.adoptGhost(e);
-        else if (e.fresh) e.birth = this.tick - 1;
+        else if (e.fresh) e.birth = this.tick - e.age; // the exact tick it left the muzzle
         break;
     }
     this.entities.set(id, e);
@@ -448,6 +454,22 @@ export class ClientWorld {
     }
     e.birth = g.birth;
     e.predictedHit = g.predictedHit;
+    e.offsetX = g.offsetX;
+    e.offsetY = g.offsetY;
+  }
+
+  /** Blends out our projectiles' smoothing offsets at the same rate as the ship's (factor `k` per frame). */
+  decayOffsets(k) {
+    for (const g of this.ghosts) {
+      g.offsetX *= k;
+      g.offsetY *= k;
+    }
+    for (const e of this.entities.values()) {
+      if (e.type === EntityType.BULLET && e.own) {
+        e.offsetX *= k;
+        e.offsetY *= k;
+      }
+    }
   }
 
   /** Removes our projectile (ghost or confirmed) fired by command `seq`, `muzzle`. Returns it. */
@@ -494,12 +516,24 @@ export class ClientWorld {
           break;
         case EntityType.BULLET: {
           let t = presentTick;
+          let carry = 0;
           if (!e.own && e.birth > -Infinity) {
             const k = clamp((renderTick - e.birth) / CATCH_UP_TICKS, 0, 1);
             t = renderTick + (presentTick - renderTick) * k;
+            carry = 1 - k; // leaves the muzzle where its shooter is drawn, then joins the present
           }
           extrapolate(e, t);
-          if (e.own) this.predictPlanetImpact(e);
+          if (e.own) {
+            e.rx = wrap(e.rx + e.offsetX, WORLD_SIZE);
+            e.ry = wrap(e.ry + e.offsetY, WORLD_SIZE);
+            this.predictPlanetImpact(e);
+          } else if (carry > 0) {
+            const shooter = this.entities.get(e.ownerId);
+            if (shooter && shooter.type === EntityType.SHIP) {
+              e.rx = wrap(e.rx + shooter.carryX * carry, WORLD_SIZE);
+              e.ry = wrap(e.ry + shooter.carryY * carry, WORLD_SIZE);
+            }
+          }
           e.visible = t >= e.birth && t - e.t0 <= e.life && !e.predictedHit && !insideBody(e.rx, e.ry, 0, this.planets);
           break;
         }
@@ -509,6 +543,8 @@ export class ClientWorld {
     for (let i = this.ghosts.length - 1; i >= 0; i--) {
       const g = this.ghosts[i];
       extrapolate(g, presentTick);
+      g.rx = wrap(g.rx + g.offsetX, WORLD_SIZE);
+      g.ry = wrap(g.ry + g.offsetY, WORLD_SIZE);
       if (presentTick >= g.birth) this.predictPlanetImpact(g);
       g.visible = presentTick >= g.birth && !g.predictedHit;
       if (presentTick - g.t0 > Math.min(g.life, GHOST_TIMEOUT)) {
@@ -524,13 +560,17 @@ export class ClientWorld {
    * fades in over the outer part of the well, so nothing pops at its edge.
    */
   carryWithBody(e) {
+    e.carryX = 0;
+    e.carryY = 0;
     const from = dominantBody(e.rx, e.ry, this.renderBodies);
     if (!from) return;
     const to = this.planets[from.id];
     const d = Math.hypot(wrapDelta(e.rx - from.x, WORLD_SIZE), wrapDelta(e.ry - from.y, WORLD_SIZE));
     const k = clamp((from.range - d) / (from.range * CARRY_DEPTH), 0, 1);
-    e.rx = wrap(e.rx + wrapDelta(to.x - from.x, WORLD_SIZE) * k, WORLD_SIZE);
-    e.ry = wrap(e.ry + wrapDelta(to.y - from.y, WORLD_SIZE) * k, WORLD_SIZE);
+    e.carryX = wrapDelta(to.x - from.x, WORLD_SIZE) * k;
+    e.carryY = wrapDelta(to.y - from.y, WORLD_SIZE) * k;
+    e.rx = wrap(e.rx + e.carryX, WORLD_SIZE);
+    e.ry = wrap(e.ry + e.carryY, WORLD_SIZE);
   }
 
   /** Our shots hitting a body are predictable (bodies move on rails): show the impact immediately. */
